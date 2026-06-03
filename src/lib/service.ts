@@ -7,7 +7,7 @@ import { logger } from "./logger";
 import { getCryptoFundamentals } from "./providers/coingecko";
 import { getStockMetrics } from "./providers/finnhub";
 import { getStockFundamentals } from "./providers/fmp";
-import { getIndexFundamentals } from "./providers/yahoo";
+import { getIndexFundamentals, getYahooFundamentals } from "./providers/yahoo";
 import {
   err,
   ok,
@@ -30,21 +30,32 @@ async function loadStockFundamentals(
   const cachedValue = await getCached<StockFundamentals>(cacheKey);
   if (cachedValue) return cachedValue;
 
-  const result =
-    type === "index"
-      ? await getIndexFundamentals(symbol)
-      : await getStockFundamentals(symbol);
-
-  const data = result.ok ? result.data : getStockFixture(symbol);
-  if (!result.ok) {
-    logger.warn("service.stock fundamentals fell back to fixture", {
-      symbol,
-      error: result.error,
-    });
+  let data: StockFundamentals;
+  if (type === "index") {
+    const result = await getIndexFundamentals(symbol);
+    data = result.ok ? result.data : getStockFixture(symbol);
+  } else {
+    // Yahoo is the primary fundamentals source (broad & free, incl. FCF/EBITDA);
+    // FMP is the fallback when Yahoo is unavailable.
+    const yahoo = await getYahooFundamentals(symbol);
+    if (yahoo.ok) {
+      data = yahoo.data;
+    } else {
+      const fmp = await getStockFundamentals(symbol);
+      if (fmp.ok) {
+        data = fmp.data;
+      } else {
+        logger.warn("service.stock fundamentals fell back to fixture", {
+          symbol,
+          error: fmp.error,
+        });
+        data = getStockFixture(symbol);
+      }
+    }
   }
 
-  // FMP's free plan gates ratio/metric endpoints to sample symbols; for stocks
-  // where they're missing, backfill from Finnhub's broader free coverage.
+  // Backfill any remaining gaps (e.g. asset turnover, interest coverage) from
+  // Finnhub's broad free coverage.
   const enriched =
     type === "stock" ? await enrichWithFinnhub(symbol, data) : data;
 
@@ -57,9 +68,27 @@ async function enrichWithFinnhub(
   symbol: string,
   data: StockFundamentals,
 ): Promise<StockFundamentals> {
-  const missingRatios =
-    data.peRatio === null && data.roe === null && data.eps === null;
-  if (!missingRatios) return data;
+  const fillable = [
+    data.peRatio,
+    data.pbRatio,
+    data.psRatio,
+    data.pegRatio,
+    data.evToEbitda,
+    data.dividendYield,
+    data.payoutRatio,
+    data.eps,
+    data.roe,
+    data.roa,
+    data.netProfitMargin,
+    data.currentRatio,
+    data.quickRatio,
+    data.debtToEquity,
+    data.interestCoverage,
+    data.revenueGrowthYoY,
+    data.beta,
+    data.assetTurnover,
+  ];
+  if (!fillable.some((v) => v === null)) return data;
 
   const result = await getStockMetrics(symbol);
   if (!result.ok) {

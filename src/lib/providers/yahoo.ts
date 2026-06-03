@@ -1,7 +1,7 @@
 import YahooFinance from "yahoo-finance2";
 import { z } from "zod";
 
-import { SUPPORTED_ASSETS } from "../assets";
+import { resolveAssetName, SUPPORTED_ASSETS } from "../assets";
 import { features } from "../env";
 import {
   FUTURES_SYMBOLS,
@@ -10,6 +10,7 @@ import {
 } from "../fixtures";
 import { logger } from "../logger";
 import {
+  err,
   ok,
   type AppError,
   type AssetRef,
@@ -71,6 +72,142 @@ export async function getIndexFundamentals(
   } catch (error) {
     logger.warn("yahoo.quote failed; using fixture", { symbol, error });
     return ok(base);
+  }
+}
+
+const YNum = z.number().finite().nullish();
+
+/** quoteSummary modules we read for fundamentals (validated defensively). */
+const FundamentalsSchema = z.object({
+  price: z
+    .object({
+      regularMarketPrice: YNum,
+      regularMarketChangePercent: YNum,
+      currency: z.string().nullish(),
+      longName: z.string().nullish(),
+      shortName: z.string().nullish(),
+      marketCap: YNum,
+    })
+    .nullish(),
+  summaryDetail: z
+    .object({
+      trailingPE: YNum,
+      priceToSalesTrailing12Months: YNum,
+      dividendYield: YNum,
+      payoutRatio: YNum,
+      marketCap: YNum,
+    })
+    .nullish(),
+  defaultKeyStatistics: z
+    .object({
+      priceToBook: YNum,
+      pegRatio: YNum,
+      enterpriseToEbitda: YNum,
+      trailingEps: YNum,
+      beta: YNum,
+    })
+    .nullish(),
+  financialData: z
+    .object({
+      returnOnEquity: YNum,
+      returnOnAssets: YNum,
+      profitMargins: YNum,
+      revenueGrowth: YNum,
+      currentRatio: YNum,
+      quickRatio: YNum,
+      debtToEquity: YNum,
+      freeCashflow: YNum,
+    })
+    .nullish(),
+  assetProfile: z.object({ sector: z.string().nullish() }).nullish(),
+});
+
+export const yahooFundamentalsSchema = FundamentalsSchema;
+
+const numOrNull = (v: number | null | undefined): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+const round1 = (n: number): number => Math.round(n * 10) / 10;
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+/** Yahoo expresses ratios like ROE as fractions; convert to percent. */
+const toPct = (v: number | null | undefined): number | null =>
+  v === null || v === undefined || !Number.isFinite(v) ? null : round1(v * 100);
+
+/**
+ * Fetch full stock fundamentals from Yahoo `quoteSummary` (free, broad coverage
+ * including free cash flow and EBITDA). Falls back to fixtures in fixture mode.
+ *
+ * @param symbol - The stock ticker.
+ * @returns A {@link Result} with normalized fundamentals.
+ */
+export async function getYahooFundamentals(
+  symbol: string,
+): Promise<Result<StockFundamentals, AppError>> {
+  if (features.forceFixtures) return ok(getStockFixture(symbol));
+  try {
+    const raw: unknown = await yahooFinance.quoteSummary(symbol, {
+      modules: [
+        "price",
+        "summaryDetail",
+        "defaultKeyStatistics",
+        "financialData",
+        "assetProfile",
+      ],
+    });
+    const parsed = FundamentalsSchema.safeParse(raw);
+    if (!parsed.success) {
+      return err({
+        code: "VALIDATION_ERROR",
+        message: "Yahoo fundamentals failed validation",
+      });
+    }
+    const p = parsed.data.price ?? {};
+    const s = parsed.data.summaryDetail ?? {};
+    const k = parsed.data.defaultKeyStatistics ?? {};
+    const f = parsed.data.financialData ?? {};
+    const a = parsed.data.assetProfile ?? {};
+
+    const price = numOrNull(p.regularMarketPrice);
+    const marketCap = numOrNull(p.marketCap) ?? numOrNull(s.marketCap);
+    if (price === null && marketCap === null) {
+      return err({ code: "NOT_FOUND", message: `No Yahoo data for ${symbol}` });
+    }
+    const de = numOrNull(f.debtToEquity);
+
+    return ok({
+      symbol: symbol.toUpperCase(),
+      name: p.longName ?? p.shortName ?? resolveAssetName(symbol),
+      price,
+      currency: p.currency ?? "USD",
+      changePct: toPct(p.regularMarketChangePercent),
+      sector: a.sector ?? null,
+      marketCap,
+      beta: numOrNull(k.beta),
+      peRatio: numOrNull(s.trailingPE),
+      pbRatio: numOrNull(k.priceToBook),
+      psRatio: numOrNull(s.priceToSalesTrailing12Months),
+      pegRatio: numOrNull(k.pegRatio),
+      evToEbitda: numOrNull(k.enterpriseToEbitda),
+      dividendYield: toPct(s.dividendYield),
+      payoutRatio: toPct(s.payoutRatio),
+      eps: numOrNull(k.trailingEps),
+      roe: toPct(f.returnOnEquity),
+      roa: toPct(f.returnOnAssets),
+      netProfitMargin: toPct(f.profitMargins),
+      currentRatio: numOrNull(f.currentRatio),
+      quickRatio: numOrNull(f.quickRatio),
+      // Yahoo reports debt/equity as a percent (e.g. 79.5 → 0.80x).
+      debtToEquity: de === null ? null : round2(de / 100),
+      interestCoverage: null, // not in these modules; Finnhub backfills it
+      freeCashFlow: numOrNull(f.freeCashflow),
+      revenueGrowthYoY: toPct(f.revenueGrowth),
+      assetTurnover: null, // not in these modules; Finnhub backfills it
+    });
+  } catch (error) {
+    logger.warn("yahoo.quoteSummary failed", { symbol, error });
+    return err({
+      code: "PROVIDER_ERROR",
+      message: "Yahoo fundamentals failed",
+    });
   }
 }
 

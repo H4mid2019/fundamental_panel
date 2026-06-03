@@ -37,7 +37,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # Cache is ephemeral: cap memory, evict LRU, no disk persistence.
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru --save "" --appendonly no
     expose:
       - "6379"
     healthcheck:
