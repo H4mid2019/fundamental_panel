@@ -1,65 +1,153 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { LineChart } from "lucide-react";
+import * as React from "react";
+import { toast } from "sonner";
+
+import { AIBriefPanel } from "@/components/AIBriefPanel";
+import { AssetHeader } from "@/components/AssetHeader";
+import { AssetSelector } from "@/components/AssetSelector";
+import { ErrorState } from "@/components/ErrorState";
+import { FuturesPanel } from "@/components/FuturesPanel";
+import { IndicatorGrid } from "@/components/IndicatorGrid";
+import { MacroSidebar } from "@/components/MacroSidebar";
+import { NewsPanel } from "@/components/NewsPanel";
+import { OptionsPanel } from "@/components/OptionsPanel";
+import { OrderBookPanel } from "@/components/OrderBookPanel";
+import { SentimentChart } from "@/components/SentimentChart";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { useAIBrief } from "@/hooks/useAIBrief";
+import { useAsset } from "@/hooks/useAsset";
+import { useIndicators } from "@/hooks/useIndicators";
+import { useNews } from "@/hooks/useNews";
+import { useOrderBook } from "@/hooks/useOrderBook";
+import { usePerformance } from "@/hooks/usePerformance";
+import { resolveAssetType } from "@/lib/assets";
+
+/** Root dashboard page: asset selection, indicators, AI brief and macro. */
+export default function HomePage() {
+  const [symbol, setSymbol] = React.useState<string | null>(null);
+
+  const assetType = symbol ? resolveAssetType(symbol) : null;
+  const isCrypto = assetType === "crypto";
+  const isEquity = assetType === "stock" || assetType === "index";
+
+  const asset = useAsset(symbol);
+  const performance = usePerformance(symbol);
+  const indicators = useIndicators(symbol);
+  const news = useNews(symbol);
+  const orderbook = useOrderBook(symbol, isCrypto);
+  const brief = useAIBrief(
+    asset.data,
+    indicators.data,
+    news.data,
+    news.isSuccess || news.isError,
+  );
+
+  // Surface fetch failures as toasts without crashing the UI.
+  React.useEffect(() => {
+    if (asset.isError) toast.error("Failed to load asset details.");
+  }, [asset.isError]);
+  React.useEffect(() => {
+    if (indicators.isError) toast.error("Failed to load indicators.");
+  }, [indicators.isError]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="mx-auto flex w-full flex-1 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 2xl:px-12">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <LineChart className="size-6 text-primary" aria-hidden />
+          <h1 className="text-lg font-semibold sm:text-xl">
+            Fundamental Analysis Dashboard
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+        <div className="flex items-center gap-2">
+          <AssetSelector value={symbol} onSelect={setSymbol} />
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {!symbol ? (
+        <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed p-12 text-center">
+          <div className="max-w-md space-y-2">
+            <h2 className="text-lg font-medium">Pick an asset to begin</h2>
+            <p className="text-sm text-muted-foreground">
+              Search for a stock (e.g. AAPL), an index (e.g. ^GSPC) or one of
+              the top cryptocurrencies to view its top fundamental indicators
+              with AI-generated explanations.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] 2xl:grid-cols-[minmax(0,1fr)_46rem]">
+          <main className="flex flex-col gap-6">
+            <AssetHeader
+              snapshot={asset.data}
+              performance={performance.data}
+              isLoading={asset.isLoading}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+            <AIBriefPanel
+              brief={brief.data}
+              isLoading={brief.isLoading && brief.isFetching}
+              isError={brief.isError}
+              onRetry={() => void brief.refetch()}
+            />
+
+            {indicators.isError ? (
+              <ErrorState
+                title="Couldn't load indicators"
+                message="The indicator data failed to load. Please try again."
+                onRetry={() => void indicators.refetch()}
+              />
+            ) : (
+              <section aria-label="Fundamental indicators">
+                <IndicatorGrid
+                  indicators={indicators.data?.indicators ?? []}
+                  perIndicator={brief.data?.perIndicator}
+                  isLoading={indicators.isLoading}
+                />
+              </section>
+            )}
+
+            {isEquity ? (
+              <OptionsPanel key={symbol} symbol={symbol} enabled={isEquity} />
+            ) : null}
+          </main>
+
+          <aside className="flex min-w-0 flex-col gap-6 2xl:grid 2xl:grid-cols-2 2xl:items-start">
+            {/* Mid column: sentiment, order book (crypto), macro, futures. */}
+            <div className="flex min-w-0 flex-col gap-6">
+              {indicators.data && indicators.data.indicators.length > 0 ? (
+                <SentimentChart indicators={indicators.data.indicators} />
+              ) : null}
+              {isCrypto ? (
+                <OrderBookPanel
+                  book={orderbook.data}
+                  isLoading={orderbook.isLoading}
+                  isError={orderbook.isError}
+                  onRetry={() => void orderbook.refetch()}
+                />
+              ) : null}
+              <MacroSidebar />
+              <FuturesPanel />
+            </div>
+            {/* Rightmost column: news. */}
+            <div className="flex min-w-0 flex-col gap-6">
+              <NewsPanel
+                news={news.data}
+                isLoading={news.isLoading}
+                isError={news.isError}
+                onRetry={() => void news.refetch()}
+              />
+            </div>
+          </aside>
         </div>
-      </main>
+      )}
+
+      <footer className="border-t pt-4 text-center text-xs text-muted-foreground">
+        Data is for informational purposes only and is not financial advice.
+      </footer>
     </div>
   );
 }

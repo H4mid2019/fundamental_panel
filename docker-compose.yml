@@ -1,0 +1,29 @@
+# Fundamental Analysis Dashboard — single-host deployment behind your nginx.
+#
+#   1. Put your API keys in `.env` (copy from .env.example).
+#   2. docker compose up -d --build
+#   3. Point nginx at http://127.0.0.1:3500 (see deploy/nginx/fundamental.conf).
+#
+# The app is bound to 127.0.0.1 only, so it's reachable solely via nginx.
+
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "127.0.0.1:3500:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/macro').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
