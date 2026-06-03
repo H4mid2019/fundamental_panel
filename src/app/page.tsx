@@ -19,10 +19,30 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAIBrief } from "@/hooks/useAIBrief";
 import { useAsset } from "@/hooks/useAsset";
 import { useIndicators } from "@/hooks/useIndicators";
+import { useMacro } from "@/hooks/useMacro";
 import { useNews } from "@/hooks/useNews";
+import { useOptions } from "@/hooks/useOptions";
 import { useOrderBook } from "@/hooks/useOrderBook";
 import { usePerformance } from "@/hooks/usePerformance";
 import { resolveAssetType } from "@/lib/assets";
+import { interpretMacro } from "@/lib/macro";
+import type { OptionsChain } from "@/lib/types";
+
+/** Implied volatility of the call nearest the underlying price (ATM IV). */
+function atmImpliedVol(chain: OptionsChain): number | null {
+  if (chain.underlyingPrice === null) return null;
+  let best: number | null = null;
+  let bestDist = Infinity;
+  for (const c of chain.calls) {
+    if (c.impliedVolatility === null) continue;
+    const dist = Math.abs(c.strike - chain.underlyingPrice);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = c.impliedVolatility;
+    }
+  }
+  return best;
+}
 
 /** Root dashboard page: asset selection, indicators, AI brief and macro. */
 export default function HomePage() {
@@ -36,13 +56,45 @@ export default function HomePage() {
   const performance = usePerformance(symbol);
   const indicators = useIndicators(symbol);
   const news = useNews(symbol);
+  const macro = useMacro();
   const orderbook = useOrderBook(symbol, isCrypto);
-  const brief = useAIBrief(
-    asset.data,
-    indicators.data,
-    news.data,
-    news.isSuccess || news.isError,
+  // Default-expiration options (shares the OptionsPanel query) for the AI brief.
+  const options = useOptions(symbol, isEquity);
+
+  // Build the extra context fed to the AI brief.
+  const macroForAI = React.useMemo(
+    () =>
+      macro.data?.metrics.map((m) => ({
+        label: m.label,
+        value: m.value,
+        unit: m.unit,
+        reading: interpretMacro(m.id, m.value).reading,
+      })),
+    [macro.data],
   );
+  const optionsForAI = React.useMemo(() => {
+    if (!isEquity || !options.data) return undefined;
+    return {
+      putCallRatio: options.data.putCallRatio,
+      atmIV: atmImpliedVol(options.data),
+    };
+  }, [isEquity, options.data]);
+
+  // Call the model once everything that feeds it has settled.
+  const settled = (r: { isSuccess: boolean; isError: boolean }) =>
+    r.isSuccess || r.isError;
+  const aiReady =
+    settled(news) &&
+    settled(macro) &&
+    settled(performance) &&
+    (!isEquity || settled(options));
+
+  const brief = useAIBrief(asset.data, indicators.data, aiReady, {
+    news: news.data,
+    macro: macroForAI,
+    performance: performance.data,
+    options: optionsForAI,
+  });
 
   // Surface fetch failures as toasts without crashing the UI.
   React.useEffect(() => {

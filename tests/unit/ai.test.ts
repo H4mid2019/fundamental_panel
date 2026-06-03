@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFallbackBrief,
   buildFallbackRecommendation,
+  extractJson,
   getAIBrief,
   hashInput,
 } from "@/lib/ai/openrouter";
@@ -41,6 +42,38 @@ describe("buildBriefPrompt", () => {
     });
     expect(prompt).toContain("news index: 42");
     expect(prompt).toContain("CEO steps down");
+  });
+
+  it("includes macro, performance and options context when provided", () => {
+    const prompt = buildBriefPrompt({
+      ...input,
+      macro: [{ label: "US 10Y", value: 4.45, unit: "%", reading: "bad" }],
+      performance: { ytd: 9, oneY: 16, threeY: 42, fiveY: 95 },
+      options: { putCallRatio: 0.85, atmIV: 0.31 },
+    });
+    expect(prompt).toContain("Macro backdrop");
+    expect(prompt).toContain("US 10Y");
+    expect(prompt).toContain("Trailing returns");
+    expect(prompt).toContain("YTD +9%");
+    expect(prompt).toContain("put/call ratio 0.85");
+    expect(prompt).toContain("ATM implied volatility 31%");
+  });
+});
+
+describe("extractJson", () => {
+  it("parses a plain JSON object", () => {
+    expect(extractJson('{"a":1}')).toEqual({ a: 1 });
+  });
+  it("strips markdown code fences", () => {
+    expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+  it("extracts JSON from a reasoning model's surrounding prose", () => {
+    const content =
+      'Let me think about this... Here is the result:\n{"summary":"ok"}\nDone.';
+    expect(extractJson(content)).toEqual({ summary: "ok" });
+  });
+  it("returns null when there is no JSON", () => {
+    expect(extractJson("no json here")).toBeNull();
   });
 });
 

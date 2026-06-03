@@ -9,6 +9,29 @@ export interface BriefIndicatorInput {
   sentiment: Sentiment;
 }
 
+/** A macro reading passed to the model (risk-asset framing). */
+export interface BriefMacroInput {
+  label: string;
+  value: number | null;
+  unit: string;
+  reading: string;
+}
+
+/** Trailing returns passed to the model. */
+export interface BriefPerformanceInput {
+  ytd: number | null;
+  oneY: number | null;
+  threeY: number | null;
+  fiveY: number | null;
+}
+
+/** Market-implied options positioning passed to the model. */
+export interface BriefOptionsInput {
+  putCallRatio: number | null;
+  /** At-the-money implied volatility as a decimal fraction (e.g. 0.31). */
+  atmIV: number | null;
+}
+
 /** Everything required to generate an AI brief for one asset. */
 export interface BriefInput {
   symbol: string;
@@ -19,6 +42,12 @@ export interface BriefInput {
   newsIndex?: number;
   /** Top-weighted news headlines (max 20), when available. */
   newsHeadlines?: string[];
+  /** Macro backdrop (VIX, yields, etc.) with risk-asset readings. */
+  macro?: BriefMacroInput[];
+  /** Trailing price returns. */
+  performance?: BriefPerformanceInput;
+  /** Options positioning (put/call ratio, ATM IV). */
+  options?: BriefOptionsInput;
 }
 
 /** The system prompt establishing tone and strict output contract. */
@@ -56,13 +85,51 @@ export function buildBriefPrompt(input: BriefInput): string {
         ].join("\n")
       : "";
 
+  const macroBlock =
+    input.macro && input.macro.length > 0
+      ? [
+          "",
+          "Macro backdrop (reading is for risk assets — good/bad/neutral):",
+          ...input.macro.map(
+            (m) =>
+              `- ${m.label}: ${m.value === null ? "N/A" : `${m.value}${m.unit}`} [${m.reading}]`,
+          ),
+        ].join("\n")
+      : "";
+
+  const fmtPct = (n: number | null) =>
+    n === null ? "N/A" : `${n > 0 ? "+" : ""}${n}%`;
+  const perfBlock = input.performance
+    ? `\nTrailing returns: YTD ${fmtPct(input.performance.ytd)}, 1Y ${fmtPct(
+        input.performance.oneY,
+      )}, 3Y ${fmtPct(input.performance.threeY)}, 5Y ${fmtPct(
+        input.performance.fiveY,
+      )}.`
+    : "";
+
+  const optionsBlock =
+    input.options &&
+    (input.options.putCallRatio !== null || input.options.atmIV !== null)
+      ? `\nOptions positioning: put/call ratio ${
+          input.options.putCallRatio ?? "n/a"
+        }, ATM implied volatility ${
+          input.options.atmIV === null
+            ? "n/a"
+            : `${Math.round(input.options.atmIV * 1000) / 10}%`
+        }.`
+      : "";
+
   return [
     `Asset: ${input.name} (${input.symbol}), type: ${input.assetType}.`,
     "Indicators (value and pre-computed sentiment):",
     rows,
     newsBlock,
+    macroBlock,
+    perfBlock,
+    optionsBlock,
     "",
-    "Analyze the fundamentals AND the news together, then judge whether a",
+    "Analyze the fundamentals, news, macro backdrop, trailing returns and",
+    "options positioning together, then judge whether a",
     "position makes sense over a 3-24 month horizon. Identify the SINGLE best",
     "holding period in whole months (between 3 and 24) where the risk/reward is",
     "most favorable, and justify it in the rationale (e.g. 'a 4-month long looks",

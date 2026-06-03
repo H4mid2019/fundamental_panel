@@ -29,6 +29,31 @@ const BriefRequestSchema = z.object({
     .max(40),
   newsIndex: z.number().min(-100).max(100).optional(),
   newsHeadlines: z.array(z.string().min(1).max(300)).max(20).optional(),
+  macro: z
+    .array(
+      z.object({
+        label: z.string().min(1).max(40),
+        value: z.number().finite().nullable(),
+        unit: z.string().max(8),
+        reading: z.string().max(16),
+      }),
+    )
+    .max(10)
+    .optional(),
+  performance: z
+    .object({
+      ytd: z.number().finite().nullable(),
+      oneY: z.number().finite().nullable(),
+      threeY: z.number().finite().nullable(),
+      fiveY: z.number().finite().nullable(),
+    })
+    .optional(),
+  options: z
+    .object({
+      putCallRatio: z.number().finite().nullable(),
+      atmIV: z.number().finite().nullable(),
+    })
+    .optional(),
 });
 
 /**

@@ -5,6 +5,7 @@ import { env, features } from "../env";
 import { fetchJson } from "../http";
 import { logger } from "../logger";
 import {
+  err,
   ok,
   type AIBrief,
   type AppError,
@@ -58,6 +59,9 @@ export function hashInput(input: BriefInput): string {
     input.indicators.map((i) => [i.id, i.value, i.sentiment]),
     input.newsIndex ?? null,
     input.newsHeadlines ?? [],
+    input.macro?.map((m) => [m.label, m.value, m.reading]) ?? null,
+    input.performance ?? null,
+    input.options ?? null,
   ]);
   let hash = 5381;
   for (let i = 0; i < serialized.length; i++) {
@@ -241,20 +245,64 @@ export function buildFallbackBrief(input: BriefInput): AIBrief {
   };
 }
 
-/** Strip optional markdown code fences from a model response. */
-function stripFences(content: string): string {
+/**
+ * Extract a JSON object from a model response, tolerating code fences and any
+ * surrounding prose — e.g. a reasoning model that emits text around the JSON.
+ *
+ * @param content - The model's message content.
+ * @returns The parsed JSON value, or `null` if none could be parsed.
+ */
+export function extractJson(content: string): unknown | null {
   const trimmed = content.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
-  return fenced?.[1]?.trim() ?? trimmed;
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(trimmed);
+  const body = (fenced?.[1] ?? trimmed).trim();
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  const candidate =
+    start !== -1 && end > start ? body.slice(start, end + 1) : body;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
 }
 
-async function callOpenRouter(
+/** Map a validated recommendation payload into a {@link TradeIdea}. */
+function toRecommendation(
   input: BriefInput,
+  rec: z.infer<typeof RecommendationSchema> | undefined,
+): TradeIdea {
+  if (!rec) return buildFallbackRecommendation(input);
+  return {
+    stance: rec.stance,
+    horizon: rec.horizon,
+    bestHorizonMonths:
+      rec.bestHorizonMonths && Number.isFinite(rec.bestHorizonMonths)
+        ? Math.min(24, Math.max(3, Math.round(rec.bestHorizonMonths)))
+        : estimateBestHorizonMonths(input),
+    conviction: rec.conviction,
+    rationale: rec.rationale,
+    hedge: rec.hedge ?? null,
+    scenario: rec.scenario
+      ? {
+          capitalEur: rec.scenario.capitalEur,
+          maxGainEur: rec.scenario.maxGainEur ?? null,
+          maxLossEur: rec.scenario.maxLossEur ?? null,
+          assumptions: rec.scenario.assumptions,
+        }
+      : null,
+  };
+}
+
+/** One OpenRouter attempt; `jsonMode` toggles the `response_format` hint. */
+async function requestBrief(
+  input: BriefInput,
+  jsonMode: boolean,
 ): Promise<Result<AIBrief, AppError>> {
   const result = await fetchJson<unknown>(OPENROUTER_URL, {
-    // Full briefs (20 per-indicator notes + recommendation) take ~15s; give
-    // headroom so they don't time out into the offline fallback. Cached 6h.
-    timeoutMs: 45_000,
+    // Full briefs (20 per-indicator notes + recommendation) take ~15s, and
+    // reasoning models add latency; give headroom. Cached 6h.
+    timeoutMs: 60_000,
     init: {
       method: "POST",
       headers: {
@@ -266,11 +314,14 @@ async function callOpenRouter(
       body: JSON.stringify({
         model: env.OPENROUTER_MODEL,
         temperature: 0.3,
-        response_format: { type: "json_object" },
+        // Reasoning models: think internally but don't return the trace (we
+        // only need the JSON answer). Ignored by non-reasoning models.
+        reasoning: { exclude: true },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildBriefPrompt(input) },
         ],
+        ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
       }),
     },
   });
@@ -278,73 +329,51 @@ async function callOpenRouter(
 
   const completion = CompletionSchema.safeParse(result.data);
   if (!completion.success || !completion.data.choices[0]) {
-    return {
-      ok: false,
-      error: {
-        code: "PROVIDER_ERROR",
-        message: "Malformed OpenRouter response",
-      },
-    };
+    return err({
+      code: "PROVIDER_ERROR",
+      message: "Malformed OpenRouter response",
+    });
   }
 
-  let parsedJson: unknown;
-  try {
-    parsedJson = JSON.parse(
-      stripFences(completion.data.choices[0].message.content),
-    );
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "PROVIDER_ERROR",
-        message: "OpenRouter did not return JSON",
-      },
-    };
+  const parsedJson = extractJson(completion.data.choices[0].message.content);
+  if (parsedJson === null) {
+    return err({
+      code: "PROVIDER_ERROR",
+      message: "OpenRouter did not return JSON",
+    });
   }
 
   const payload = BriefPayloadSchema.safeParse(parsedJson);
   if (!payload.success) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "AI brief failed schema validation",
-      },
-    };
+    return err({
+      code: "VALIDATION_ERROR",
+      message: "AI brief failed schema validation",
+    });
   }
-
-  const rec = payload.data.recommendation;
-  const recommendation: TradeIdea = rec
-    ? {
-        stance: rec.stance,
-        horizon: rec.horizon,
-        bestHorizonMonths:
-          rec.bestHorizonMonths && Number.isFinite(rec.bestHorizonMonths)
-            ? Math.min(24, Math.max(3, Math.round(rec.bestHorizonMonths)))
-            : estimateBestHorizonMonths(input),
-        conviction: rec.conviction,
-        rationale: rec.rationale,
-        hedge: rec.hedge ?? null,
-        scenario: rec.scenario
-          ? {
-              capitalEur: rec.scenario.capitalEur,
-              maxGainEur: rec.scenario.maxGainEur ?? null,
-              maxLossEur: rec.scenario.maxLossEur ?? null,
-              assumptions: rec.scenario.assumptions,
-            }
-          : null,
-      }
-    : buildFallbackRecommendation(input);
 
   return ok({
     symbol: input.symbol,
     summary: payload.data.summary,
     perIndicator: payload.data.perIndicator,
-    recommendation,
+    recommendation: toRecommendation(input, payload.data.recommendation),
     model: env.OPENROUTER_MODEL,
     generatedAt: new Date().toISOString(),
     fallback: false,
   });
+}
+
+async function callOpenRouter(
+  input: BriefInput,
+): Promise<Result<AIBrief, AppError>> {
+  const first = await requestBrief(input, true);
+  if (first.ok) return first;
+  // Some models/providers reject response_format=json_object (common with
+  // reasoning models). Retry once relying on the prompt + robust extraction.
+  logger.warn("openrouter json-mode failed; retrying without response_format", {
+    symbol: input.symbol,
+    error: first.error,
+  });
+  return requestBrief(input, false);
 }
 
 /**
