@@ -27,6 +27,10 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_URL: z.url().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 
+  // Self-hosted Redis (native protocol), e.g. redis://localhost:6379. Takes
+  // precedence over Upstash and the in-memory cache when set.
+  REDIS_URL: z.string().min(1).optional(),
+
   NEXT_PUBLIC_APP_URL: z.url().default("http://localhost:3000"),
 
   // When truthy, every provider serves deterministic fixtures (used by E2E).
@@ -73,6 +77,7 @@ export const features = {
   coingecko: Boolean(env.COINGECKO_API_KEY),
   fred: Boolean(env.FRED_API_KEY),
   finnhub: Boolean(env.FINNHUB_API_KEY),
+  redisUrl: Boolean(env.REDIS_URL),
   redis: Boolean(env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN),
   forceFixtures: ["1", "true", "yes"].includes(
     (env.USE_FIXTURES ?? "").toLowerCase(),

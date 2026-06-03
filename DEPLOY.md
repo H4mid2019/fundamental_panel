@@ -117,8 +117,14 @@ sudo nginx -t && sudo systemctl reload nginx
 ## Environment notes
 
 - All provider/AI keys are **optional** — absent ones fall back to fixtures.
-- Caching uses in-memory LRU by default (fine for a single instance). Set
-  `UPSTASH_REDIS_REST_URL` / `_TOKEN` only if you run multiple instances.
+- Caching priority is **`REDIS_URL` > Upstash > in-memory LRU**.
+  - The Docker Compose stack includes a bounded Redis and sets
+    `REDIS_URL=redis://redis:6379` automatically — nothing to configure.
+  - Bare/host Redis: `sudo apt install redis-server`, then set
+    `REDIS_URL=redis://127.0.0.1:6379` in `.env`. Cap it in
+    `/etc/redis/redis.conf`: `maxmemory 128mb` + `maxmemory-policy allkeys-lru`.
+  - `UPSTASH_REDIS_REST_*` is for Upstash's **HTTP** API only — do **not** point
+    it at a native Redis. Use `REDIS_URL` for self-hosted Redis.
 - For a fast offline demo, set `USE_FIXTURES=1` in `.env`.
 - Verify keys after deploy: `npm run check:apis` (never prints secrets).
 

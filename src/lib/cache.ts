@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import IORedis from "ioredis";
 import { LRUCache } from "lru-cache";
 
 import { env, features } from "./env";
@@ -30,7 +31,7 @@ class MemoryCache implements CacheBackend {
   }
 }
 
-/** Upstash Redis backend used when credentials are configured. */
+/** Upstash Redis (HTTP REST) backend used when credentials are configured. */
 class RedisCache implements CacheBackend {
   constructor(private readonly redis: Redis) {}
 
@@ -43,7 +44,32 @@ class RedisCache implements CacheBackend {
   }
 }
 
+/** Self-hosted Redis (native protocol) backend via ioredis. */
+class IoRedisCache implements CacheBackend {
+  constructor(private readonly redis: IORedis) {}
+
+  async get<T>(key: string): Promise<T | null> {
+    const raw = await this.redis.get(key);
+    return raw === null ? null : (JSON.parse(raw) as T);
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (value === null || value === undefined) return;
+    await this.redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+  }
+}
+
 function createBackend(): CacheBackend {
+  if (features.redisUrl && env.REDIS_URL) {
+    logger.info("cache.backend", { backend: "redis" });
+    const client = new IORedis(env.REDIS_URL, {
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+      lazyConnect: false,
+    });
+    client.on("error", (error) => logger.warn("redis client error", { error }));
+    return new IoRedisCache(client);
+  }
   if (
     features.redis &&
     env.UPSTASH_REDIS_REST_URL &&

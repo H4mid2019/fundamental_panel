@@ -13,8 +13,8 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Pin the workspace root to this project (a stray lockfile may exist above).
   turbopack: { root: fileURLToPath(new URL(".", import.meta.url)) },
-  // yahoo-finance2 is a Node-only library; keep it out of the bundler graph.
-  serverExternalPackages: ["yahoo-finance2"],
+  // Node-only libraries; keep them out of the bundler graph.
+  serverExternalPackages: ["yahoo-finance2", "ioredis"],
   async headers() {
     return [
       {

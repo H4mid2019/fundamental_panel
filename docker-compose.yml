@@ -5,6 +5,7 @@
 #   3. Point nginx at http://127.0.0.1:3500 (see deploy/nginx/fundamental.conf).
 #
 # The app is bound to 127.0.0.1 only, so it's reachable solely via nginx.
+# A bounded Redis is included for caching (keeps cache out of the app's heap).
 
 services:
   web:
@@ -13,6 +14,10 @@ services:
     env_file: .env
     environment:
       - NODE_ENV=production
+      # Use the bundled Redis (overrides any REDIS_URL in .env).
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
     ports:
       - "127.0.0.1:3500:3000"
     healthcheck:
@@ -27,3 +32,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Cache is ephemeral: cap memory, evict LRU, no disk persistence.
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
