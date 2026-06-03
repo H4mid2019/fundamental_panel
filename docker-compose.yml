@@ -14,8 +14,8 @@ services:
     env_file: .env
     environment:
       - NODE_ENV=production
-      # Use the bundled Redis (overrides any REDIS_URL in .env).
-      - REDIS_URL=redis://redis:6379
+      # Use the bundled Redis. Pick the DB index with REDIS_DB in .env (0-15).
+      - REDIS_URL=redis://redis:6379/${REDIS_DB:-0}
     depends_on:
       - redis
     ports:
@@ -37,7 +37,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # Cache is ephemeral: cap memory, evict LRU, no disk persistence.
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save "" --appendonly no
     expose:
       - "6379"
     healthcheck:
