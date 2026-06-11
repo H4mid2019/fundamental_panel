@@ -1,6 +1,7 @@
 "use client";
 
-import { LineChart } from "lucide-react";
+import { CandlestickChart, LineChart } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -8,12 +9,14 @@ import { AIBriefPanel } from "@/components/AIBriefPanel";
 import { AssetHeader } from "@/components/AssetHeader";
 import { AssetSelector } from "@/components/AssetSelector";
 import { ErrorState } from "@/components/ErrorState";
+import { FinancialsPanel } from "@/components/FinancialsPanel";
 import { FuturesPanel } from "@/components/FuturesPanel";
 import { IndicatorGrid } from "@/components/IndicatorGrid";
 import { MacroSidebar } from "@/components/MacroSidebar";
 import { NewsPanel } from "@/components/NewsPanel";
 import { OptionsPanel } from "@/components/OptionsPanel";
 import { OrderBookPanel } from "@/components/OrderBookPanel";
+import { PeerBenchmarksPanel } from "@/components/PeerBenchmarksPanel";
 import { SentimentChart } from "@/components/SentimentChart";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAIBrief } from "@/hooks/useAIBrief";
@@ -51,6 +54,7 @@ export default function HomePage() {
   const assetType = symbol ? resolveAssetType(symbol) : null;
   const isCrypto = assetType === "crypto";
   const isEquity = assetType === "stock" || assetType === "index";
+  const isStock = assetType === "stock";
 
   const asset = useAsset(symbol);
   const performance = usePerformance(symbol);
@@ -115,6 +119,13 @@ export default function HomePage() {
         </div>
         <div className="flex items-center gap-2">
           <AssetSelector value={symbol} onSelect={setSymbol} />
+          <Link
+            href="/chart"
+            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <CandlestickChart className="size-4" aria-hidden />
+            Charts
+          </Link>
           <ThemeToggle />
         </div>
       </header>
@@ -161,6 +172,22 @@ export default function HomePage() {
                 />
               </section>
             )}
+
+            {isStock ? (
+              <PeerBenchmarksPanel
+                key={`peers-${symbol}`}
+                symbol={symbol}
+                enabled={isStock}
+              />
+            ) : null}
+
+            {isStock ? (
+              <FinancialsPanel
+                key={`fin-${symbol}`}
+                symbol={symbol}
+                enabled={isStock}
+              />
+            ) : null}
 
             {isEquity ? (
               <OptionsPanel key={symbol} symbol={symbol} enabled={isEquity} />

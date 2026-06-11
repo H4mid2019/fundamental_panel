@@ -215,6 +215,63 @@ export interface CryptoFundamentals {
   priceChange30dPct: number | null;
 }
 
+/** Tab groups of the peer-benchmarks comparison table. */
+export type PeerGroupId = "quote" | "value" | "size" | "growth" | "profit";
+
+/** One comparison row: the asset's value vs the peer median and sector avg. */
+export interface PeerMetricRow {
+  id: string;
+  label: string;
+  format: IndicatorFormat;
+  value: number | null;
+  peerMedian: number | null;
+  sectorAvg: number | null;
+  /** Which direction reads as favorable, or `null` when neutral. */
+  betterWhen: "higher" | "lower" | null;
+}
+
+/** One tab of peer-benchmark rows. */
+export interface PeerGroup {
+  id: PeerGroupId;
+  label: string;
+  rows: PeerMetricRow[];
+}
+
+/** Peer comparison payload returned by `/api/peers/[symbol]`. */
+export interface PeerBenchmarks {
+  symbol: string;
+  peers: { symbol: string; name: string }[];
+  groups: PeerGroup[];
+  asOf: string;
+  /** True when produced without live peer data. */
+  fallback: boolean;
+}
+
+/** Reporting cadence for financial statements. */
+export type StatementFrequency = "annual" | "quarterly";
+
+/** The three financial statements. */
+export type StatementKind = "income" | "balance" | "cashflow";
+
+/** One fiscal period of a statement, keyed by line-item id. */
+export interface StatementPeriod {
+  /** Fiscal period end (ISO date). */
+  date: string;
+  /** Display label, e.g. `2025` or `Q3 '25`. */
+  label: string;
+  values: Record<string, number | null>;
+}
+
+/** Financial statements payload returned by `/api/financials/[symbol]`. */
+export interface FinancialStatements {
+  symbol: string;
+  frequency: StatementFrequency;
+  income: StatementPeriod[];
+  balance: StatementPeriod[];
+  cashflow: StatementPeriod[];
+  asOf: string;
+}
+
 /** Categories of market-moving events detected in news headlines. */
 export type NewsEventType =
   | "leadership"

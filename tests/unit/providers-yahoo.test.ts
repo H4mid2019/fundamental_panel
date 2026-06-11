@@ -100,4 +100,59 @@ describe("getYahooFundamentals", () => {
     const result = await getYahooFundamentals("ZZZZ");
     expect(result.ok).toBe(false);
   });
+
+  it("derives negative P/E and PEG for loss-makers (Yahoo omits them)", async () => {
+    // Modeled on RKLB: negative trailing EPS, no trailingPE/pegRatio fields.
+    mockedSummary.mockResolvedValue({
+      price: {
+        regularMarketPrice: 108.23,
+        currency: "USD",
+        longName: "Rocket Lab Corporation",
+        marketCap: 5.2e10,
+      },
+      summaryDetail: { priceToSalesTrailing12Months: 92.2 },
+      defaultKeyStatistics: { trailingEps: -0.32 },
+      financialData: { earningsGrowth: 0.195 },
+      assetProfile: { sector: "Industrials" },
+    } as never);
+
+    const result = await getYahooFundamentals("RKLB");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.peRatio).toBeCloseTo(-338.22, 2); // 108.23 / -0.32
+      expect(result.data.pegRatio).toBeCloseTo(-17.34, 2); // -338.22 / 19.5
+      expect(result.data.eps).toBe(-0.32);
+    }
+  });
+
+  it("falls back to analyst trend growth for PEG when earningsGrowth is missing", async () => {
+    mockedSummary.mockResolvedValue({
+      price: { regularMarketPrice: 108.23, marketCap: 5.2e10 },
+      defaultKeyStatistics: { trailingEps: -0.32 },
+      financialData: {},
+      earningsTrend: {
+        trend: [
+          { period: "0y", growth: 0.373 },
+          { period: "+1y", growth: 0.9364 },
+        ],
+      },
+    } as never);
+
+    const result = await getYahooFundamentals("RKLB");
+    expect(result.ok).toBe(true);
+    // P/E -338.22 over the +1y growth estimate (93.6%).
+    if (result.ok) expect(result.data.pegRatio).toBeCloseTo(-3.61, 2);
+  });
+
+  it("prefers Yahoo's own trailingPE over the derived value", async () => {
+    mockedSummary.mockResolvedValue({
+      price: { regularMarketPrice: 100, marketCap: 1e9 },
+      summaryDetail: { trailingPE: 20 },
+      defaultKeyStatistics: { trailingEps: 4 }, // would derive 25 otherwise
+    } as never);
+
+    const result = await getYahooFundamentals("TEST");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.peRatio).toBe(20);
+  });
 });
