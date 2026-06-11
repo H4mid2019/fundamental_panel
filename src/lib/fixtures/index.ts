@@ -2,11 +2,14 @@ import { resolveAssetName } from "../assets";
 import type {
   AssetType,
   CryptoFundamentals,
+  FinancialStatements,
   FuturesQuote,
   MacroMetric,
   OptionContract,
   OrderBookLevel,
   PerformanceReturns,
+  StatementFrequency,
+  StatementPeriod,
   StockFundamentals,
 } from "../types";
 
@@ -664,4 +667,113 @@ export function getNewsFixture(
     publishedAt: new Date(nowMs - t.daysAgo * 86_400_000).toISOString(),
     summary: undefined,
   }));
+}
+
+/**
+ * Generate deterministic fixture financial statements for a symbol.
+ *
+ * Figures are scaled from the stock fixture's implied revenue (market cap over
+ * P/S) so different symbols produce different but plausible statements.
+ *
+ * @param symbol - The stock ticker.
+ * @param frequency - Annual or quarterly periods.
+ * @param nowMs - Current time in ms since epoch (anchors period labels).
+ * @returns A fully-populated statements payload.
+ */
+export function getFinancialsFixture(
+  symbol: string,
+  frequency: StatementFrequency,
+  nowMs: number,
+): FinancialStatements {
+  const f = getStockFixture(symbol);
+  const annualRevenue =
+    f.marketCap !== null && f.psRatio !== null && f.psRatio > 0
+      ? f.marketCap / f.psRatio
+      : 50_000_000_000;
+  const margin = (f.netProfitMargin ?? 10) / 100;
+
+  const periods = frequency === "annual" ? 5 : 6;
+  const now = new Date(nowMs);
+  const year = now.getUTCFullYear();
+  const quarter = Math.floor(now.getUTCMonth() / 3) + 1;
+
+  const income: StatementPeriod[] = [];
+  const balance: StatementPeriod[] = [];
+  const cashflow: StatementPeriod[] = [];
+
+  for (let i = periods - 1; i >= 0; i--) {
+    let label: string;
+    let date: string;
+    let revenue: number;
+    if (frequency === "annual") {
+      const y = year - 1 - i;
+      label = String(y);
+      date = `${y}-12-31`;
+      revenue = annualRevenue / Math.pow(1.08, i + 1);
+    } else {
+      // Walk back i quarters from the previous (last completed) quarter.
+      const qIndex = year * 4 + (quarter - 2) - i;
+      const qy = Math.floor(qIndex / 4);
+      const q = (qIndex % 4) + 1;
+      label = `Q${q} '${String(qy).slice(2)}`;
+      date = `${qy}-${String(q * 3).padStart(2, "0")}-28`;
+      revenue = annualRevenue / 4 / Math.pow(1.02, i + 1);
+    }
+
+    const grossProfit = revenue * 0.42;
+    const operatingIncome = revenue * (margin + 0.04);
+    const netIncome = revenue * margin;
+    income.push({
+      date,
+      label,
+      values: {
+        totalRevenue: revenue,
+        costOfRevenue: revenue - grossProfit,
+        grossProfit,
+        operatingExpense: grossProfit - operatingIncome,
+        operatingIncome,
+        pretaxIncome: netIncome * 1.18,
+        taxProvision: netIncome * 0.18,
+        netIncome,
+        EBITDA: operatingIncome * 1.2,
+        dilutedAverageShares: 1_000_000_000,
+        dilutedEPS: netIncome / 1_000_000_000,
+      },
+    });
+    balance.push({
+      date,
+      label,
+      values: {
+        totalAssets: revenue * 1.8,
+        currentAssets: revenue * 0.6,
+        cashAndCashEquivalents: revenue * 0.25,
+        totalLiabilitiesNetMinorityInterest: revenue * 1.1,
+        currentLiabilities: revenue * 0.45,
+        totalDebt: revenue * 0.5,
+        stockholdersEquity: revenue * 0.7,
+        workingCapital: revenue * 0.15,
+      },
+    });
+    cashflow.push({
+      date,
+      label,
+      values: {
+        operatingCashFlow: netIncome * 1.25,
+        investingCashFlow: -revenue * 0.1,
+        financingCashFlow: -netIncome * 0.4,
+        capitalExpenditure: -revenue * 0.08,
+        freeCashFlow: netIncome * 1.25 - revenue * 0.08,
+        endCashPosition: revenue * 0.25,
+      },
+    });
+  }
+
+  return {
+    symbol: symbol.toUpperCase(),
+    frequency,
+    income,
+    balance,
+    cashflow,
+    asOf: new Date(nowMs).toISOString(),
+  };
 }

@@ -4,13 +4,20 @@ import type { IndicatorId, Sentiment } from "../types";
  * A classification rule for a single indicator.
  *
  * - `higherBetter`: bullish at/above a level, bearish at/below another.
- * - `lowerBetter`: bullish at/below a level, bearish at/above another.
+ * - `lowerBetter`: bullish at/below a level, bearish at/above another. Set
+ *   `negativeIsBearish` for valuation ratios where a negative value signals
+ *   losses or negative equity rather than cheapness (e.g. P/E, P/B).
  * - `band`: bullish inside the sweet-spot range, bearish outside the wider
  *   acceptable range, neutral in between.
  */
 export type ThresholdRule =
   | { kind: "higherBetter"; bullishAtOrAbove: number; bearishAtOrBelow: number }
-  | { kind: "lowerBetter"; bullishAtOrBelow: number; bearishAtOrAbove: number }
+  | {
+      kind: "lowerBetter";
+      bullishAtOrBelow: number;
+      bearishAtOrAbove: number;
+      negativeIsBearish?: boolean;
+    }
   | { kind: "band"; bullish: [number, number]; acceptable: [number, number] };
 
 /**
@@ -18,11 +25,26 @@ export type ThresholdRule =
  * market cap) are always classified `neutral` when a value is present.
  */
 export const THRESHOLDS: Partial<Record<IndicatorId, ThresholdRule>> = {
-  pe: { kind: "lowerBetter", bullishAtOrBelow: 15, bearishAtOrAbove: 35 },
-  pb: { kind: "lowerBetter", bullishAtOrBelow: 1.5, bearishAtOrAbove: 5 },
+  pe: {
+    kind: "lowerBetter",
+    bullishAtOrBelow: 15,
+    bearishAtOrAbove: 35,
+    negativeIsBearish: true,
+  },
+  pb: {
+    kind: "lowerBetter",
+    bullishAtOrBelow: 1.5,
+    bearishAtOrAbove: 5,
+    negativeIsBearish: true,
+  },
   ps: { kind: "lowerBetter", bullishAtOrBelow: 2, bearishAtOrAbove: 10 },
   peg: { kind: "band", bullish: [0, 1], acceptable: [0, 2] },
-  evEbitda: { kind: "lowerBetter", bullishAtOrBelow: 10, bearishAtOrAbove: 18 },
+  evEbitda: {
+    kind: "lowerBetter",
+    bullishAtOrBelow: 10,
+    bearishAtOrAbove: 18,
+    negativeIsBearish: true,
+  },
   dividendYield: {
     kind: "higherBetter",
     bullishAtOrAbove: 3,
@@ -43,6 +65,8 @@ export const THRESHOLDS: Partial<Record<IndicatorId, ThresholdRule>> = {
     kind: "lowerBetter",
     bullishAtOrBelow: 0.5,
     bearishAtOrAbove: 2,
+    // Negative D/E means negative shareholder equity, not low leverage.
+    negativeIsBearish: true,
   },
   interestCoverage: {
     kind: "higherBetter",
@@ -94,6 +118,7 @@ export function classify(id: IndicatorId, value: number | null): Sentiment {
       return "neutral";
     }
     case "lowerBetter": {
+      if (rule.negativeIsBearish && value < 0) return "bearish";
       if (value <= rule.bullishAtOrBelow) return "bullish";
       if (value >= rule.bearishAtOrAbove) return "bearish";
       return "neutral";

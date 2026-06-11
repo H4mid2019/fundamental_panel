@@ -4,7 +4,7 @@ import { getDefinition } from "./definitions";
 import { classify } from "./thresholds";
 
 /** Broad-market reference averages used for the "vs sector" hint. */
-const SECTOR_AVERAGES: Partial<Record<IndicatorId, number>> = {
+export const SECTOR_AVERAGES: Partial<Record<IndicatorId, number>> = {
   pe: 22,
   pb: 3.5,
   ps: 2.5,

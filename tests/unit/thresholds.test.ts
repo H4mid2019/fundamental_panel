@@ -38,6 +38,15 @@ describe("classify", () => {
     it("is neutral in between", () => {
       expect(classify("pe", 25)).toBe("neutral");
     });
+    it("is bearish for negative valuation ratios (losses, not cheapness)", () => {
+      expect(classify("pe", -343.1)).toBe("bearish");
+      expect(classify("pb", -2)).toBe("bearish");
+      expect(classify("evEbitda", -10)).toBe("bearish");
+      expect(classify("debtToEquity", -0.4)).toBe("bearish");
+    });
+    it("still treats low non-negative values as bullish", () => {
+      expect(classify("pe", 0)).toBe("bullish");
+    });
   });
 
   describe("band (PEG)", () => {

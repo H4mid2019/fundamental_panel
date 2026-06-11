@@ -4,9 +4,12 @@ import { getCryptoFixture, getStockFixture } from "./fixtures";
 import { buildCryptoIndicators } from "./indicators/crypto";
 import { buildStockIndicators } from "./indicators/stock";
 import { logger } from "./logger";
+import { buildPeerGroups, type PeerInput } from "./peers";
 import { getCryptoFundamentals } from "./providers/coingecko";
+import { getFinancialStatements } from "./providers/financials";
 import { getStockMetrics } from "./providers/finnhub";
 import { getStockFundamentals } from "./providers/fmp";
+import { getRecommendedPeers, getQuoteStats } from "./providers/peers";
 import { getIndexFundamentals, getYahooFundamentals } from "./providers/yahoo";
 import {
   err,
@@ -14,8 +17,11 @@ import {
   type AppError,
   type AssetSnapshot,
   type CryptoFundamentals,
+  type FinancialStatements,
   type IndicatorSet,
+  type PeerBenchmarks,
   type Result,
+  type StatementFrequency,
   type StockFundamentals,
 } from "./types";
 
@@ -57,10 +63,27 @@ async function loadStockFundamentals(
   // Backfill any remaining gaps (e.g. asset turnover, interest coverage) from
   // Finnhub's broad free coverage.
   const enriched =
-    type === "stock" ? await enrichWithFinnhub(symbol, data) : data;
+    type === "stock"
+      ? deriveValuationRatios(await enrichWithFinnhub(symbol, data))
+      : data;
 
   await setCached(cacheKey, enriched, FUNDAMENTALS_TTL_SECONDS);
   return enriched;
+}
+
+/**
+ * Derive valuation ratios providers withhold for loss-making companies.
+ *
+ * Most sources omit P/E (and PEG) when trailing earnings are negative, which
+ * would surface as N/A; a negative ratio is more informative, so compute P/E
+ * from price / EPS when possible.
+ *
+ * @param f - Enriched fundamentals.
+ * @returns Fundamentals with derived ratios filled in where still missing.
+ */
+export function deriveValuationRatios(f: StockFundamentals): StockFundamentals {
+  if (f.peRatio !== null || f.price === null || !f.eps) return f;
+  return { ...f, peRatio: Math.round((f.price / f.eps) * 100) / 100 };
 }
 
 /** Fill missing ratio/metric fields from Finnhub when FMP didn't supply them. */
@@ -193,6 +216,120 @@ export async function getAssetSnapshot(
     meta: f.sector ?? undefined,
     asOf,
   });
+}
+
+const PEERS_TTL_SECONDS = 15 * 60;
+const FINANCIALS_TTL_SECONDS = 6 * 60 * 60;
+
+/**
+ * Load financial statements with caching (statements change at most quarterly).
+ *
+ * @param symbol - The stock symbol.
+ * @param frequency - Annual or quarterly periods.
+ * @returns A {@link Result} with the normalized statements.
+ */
+export async function getFinancials(
+  symbol: string,
+  frequency: StatementFrequency,
+): Promise<Result<FinancialStatements, AppError>> {
+  const type = resolveAssetType(symbol);
+  if (type !== "stock") {
+    return err({
+      code: "NOT_FOUND",
+      message: "Financial statements are only available for stocks",
+    });
+  }
+
+  const cacheKey = `fin:${symbol.toUpperCase()}:${frequency}`;
+  const cachedValue = await getCached<FinancialStatements>(cacheKey);
+  if (cachedValue) return ok(cachedValue);
+
+  const result = await getFinancialStatements(symbol, frequency);
+  if (!result.ok) return result;
+
+  await setCached(cacheKey, result.data, FINANCIALS_TTL_SECONDS);
+  return result;
+}
+
+/**
+ * Lightweight peer fundamentals: Yahoo only (no Finnhub enrichment, to keep a
+ * 5-peer comparison from burning the Finnhub rate budget), cached separately
+ * from the main fundamentals path, fixture-backed in fixture mode.
+ */
+async function loadPeerFundamentals(
+  symbol: string,
+): Promise<StockFundamentals | null> {
+  const cacheKey = `fund:peer:${symbol.toUpperCase()}`;
+  const cachedValue = await getCached<StockFundamentals>(cacheKey);
+  if (cachedValue) return cachedValue;
+
+  const result = await getYahooFundamentals(symbol);
+  if (!result.ok) {
+    logger.warn("service.peer fundamentals unavailable", {
+      symbol,
+      error: result.error,
+    });
+    return null;
+  }
+  const data = deriveValuationRatios(result.data);
+  await setCached(cacheKey, data, FUNDAMENTALS_TTL_SECONDS);
+  return data;
+}
+
+/**
+ * Build the peer-benchmark comparison (asset vs peer median vs sector avg).
+ *
+ * Peers come from Yahoo's "similar stocks"; each peer's fundamentals are
+ * fetched from Yahoo and the comparison rows are grouped into the five tabs
+ * the UI renders. Only meaningful for stocks.
+ *
+ * @param symbol - The stock symbol.
+ * @returns A {@link Result} with the peer benchmarks.
+ */
+export async function getPeerBenchmarks(
+  symbol: string,
+): Promise<Result<PeerBenchmarks, AppError>> {
+  const type = resolveAssetType(symbol);
+  if (type !== "stock") {
+    return err({
+      code: "NOT_FOUND",
+      message: "Peer benchmarks are only available for stocks",
+    });
+  }
+
+  const cacheKey = `peers:${symbol.toUpperCase()}`;
+  const cachedValue = await getCached<PeerBenchmarks>(cacheKey);
+  if (cachedValue) return ok(cachedValue);
+
+  const self = await loadStockFundamentals(symbol);
+  const peersResult = await getRecommendedPeers(symbol);
+  const peerSymbols = peersResult.ok ? peersResult.data : [];
+
+  const [stats, ...peerFunds] = await Promise.all([
+    getQuoteStats([self.symbol, ...peerSymbols]),
+    ...peerSymbols.map((p) => loadPeerFundamentals(p)),
+  ]);
+
+  const peers: PeerInput[] = peerFunds
+    .filter((f): f is StockFundamentals => f !== null)
+    .map((f) => ({ fundamentals: f, stats: stats[f.symbol] }));
+
+  const data: PeerBenchmarks = {
+    symbol: self.symbol,
+    peers: peers.map((p) => ({
+      symbol: p.fundamentals.symbol,
+      name: p.fundamentals.name,
+    })),
+    groups: buildPeerGroups(
+      { fundamentals: self, stats: stats[self.symbol] },
+      peers,
+    ),
+    asOf: new Date().toISOString(),
+    fallback: !peersResult.ok || peers.length === 0,
+  };
+
+  await setCached(cacheKey, data, PEERS_TTL_SECONDS);
+  return ok(data);
 }
 
 /**

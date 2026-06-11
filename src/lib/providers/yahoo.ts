@@ -34,8 +34,11 @@ const QuoteSchema = z.object({
 export const yahooSchemas = { QuoteSchema };
 
 // yahoo-finance2 v3 exposes a class that must be instantiated; suppress its
-// one-time interactive survey notice in server contexts.
-const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
+// one-time interactive survey notice in server contexts. Shared with the
+// peers/financials providers so they reuse one request queue.
+export const yahooFinance = new YahooFinance({
+  suppressNotices: ["yahooSurvey"],
+});
 
 /**
  * Fetch index fundamentals via Yahoo Finance, layered over a fixture baseline.
@@ -113,6 +116,7 @@ const FundamentalsSchema = z.object({
       returnOnAssets: YNum,
       profitMargins: YNum,
       revenueGrowth: YNum,
+      earningsGrowth: YNum,
       currentRatio: YNum,
       quickRatio: YNum,
       debtToEquity: YNum,
@@ -120,6 +124,11 @@ const FundamentalsSchema = z.object({
     })
     .nullish(),
   assetProfile: z.object({ sector: z.string().nullish() }).nullish(),
+  earningsTrend: z
+    .object({
+      trend: z.array(z.object({ period: z.string().nullish(), growth: YNum })),
+    })
+    .nullish(),
 });
 
 export const yahooFundamentalsSchema = FundamentalsSchema;
@@ -151,6 +160,7 @@ export async function getYahooFundamentals(
         "defaultKeyStatistics",
         "financialData",
         "assetProfile",
+        "earningsTrend",
       ],
     });
     const parsed = FundamentalsSchema.safeParse(raw);
@@ -173,6 +183,33 @@ export async function getYahooFundamentals(
     }
     const de = numOrNull(f.debtToEquity);
 
+    // Yahoo omits trailingPE (and pegRatio) for loss-making companies, so a
+    // negative P/E would otherwise surface as N/A. Derive them: P/E from
+    // price / trailing EPS, PEG from that P/E over earnings growth (in %),
+    // preferring the longest analyst-estimate horizon available.
+    const eps = numOrNull(k.trailingEps);
+    const peRatio =
+      numOrNull(s.trailingPE) ??
+      (price !== null && eps !== null && eps !== 0
+        ? round2(price / eps)
+        : null);
+    const trendGrowth = (period: string): number | null =>
+      numOrNull(
+        parsed.data.earningsTrend?.trend.find((t) => t.period === period)
+          ?.growth,
+      );
+    const earningsGrowthPct = toPct(
+      f.earningsGrowth ??
+        trendGrowth("+5y") ??
+        trendGrowth("+1y") ??
+        trendGrowth("0y"),
+    );
+    const pegRatio =
+      numOrNull(k.pegRatio) ??
+      (peRatio !== null && earningsGrowthPct !== null && earningsGrowthPct !== 0
+        ? round2(peRatio / earningsGrowthPct)
+        : null);
+
     return ok({
       symbol: symbol.toUpperCase(),
       name: p.longName ?? p.shortName ?? resolveAssetName(symbol),
@@ -182,14 +219,14 @@ export async function getYahooFundamentals(
       sector: a.sector ?? null,
       marketCap,
       beta: numOrNull(k.beta),
-      peRatio: numOrNull(s.trailingPE),
+      peRatio,
       pbRatio: numOrNull(k.priceToBook),
       psRatio: numOrNull(s.priceToSalesTrailing12Months),
-      pegRatio: numOrNull(k.pegRatio),
+      pegRatio,
       evToEbitda: numOrNull(k.enterpriseToEbitda),
       dividendYield: toPct(s.dividendYield),
       payoutRatio: toPct(s.payoutRatio),
-      eps: numOrNull(k.trailingEps),
+      eps,
       roe: toPct(f.returnOnEquity),
       roa: toPct(f.returnOnAssets),
       netProfitMargin: toPct(f.profitMargins),
