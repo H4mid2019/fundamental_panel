@@ -159,6 +159,14 @@ describe("vpin", () => {
       expect(p.value).toBeLessThanOrEqual(1);
     }
   });
+
+  it("emits points with the defaults on a typical 500-bar window", () => {
+    // Regression: previously window===bucketsTarget left ~0 buckets reaching
+    // the rolling window, so VPIN rendered nothing.
+    const closes = Array.from({ length: 500 }, (_, i) => 100 + (i % 11));
+    const out = vpin(candlesFrom(closes, { buyShare: 0.55, volume: 80 }));
+    expect(out.length).toBeGreaterThan(0);
+  });
 });
 
 describe("vwap", () => {

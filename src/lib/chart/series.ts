@@ -71,7 +71,7 @@ export const INDICATORS: readonly IndicatorMeta[] = [
   { id: "ema50", label: "EMA 50", group: "overlay" },
   { id: "bb", label: "Bollinger Bands", group: "overlay" },
   { id: "vwap", label: "VWAP (session)", group: "overlay" },
-  { id: "rsi", label: "RSI (14)", group: "pane" },
+  { id: "rsi", label: "RSI (14/21/52)", group: "pane" },
   { id: "macd", label: "MACD (12,26,9)", group: "pane" },
   { id: "cvd", label: "CVD", group: "pane", needsOrderFlow: true },
   { id: "ofi", label: "OFI", group: "pane", needsOrderFlow: true },

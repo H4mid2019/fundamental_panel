@@ -8,6 +8,7 @@ import {
   CrosshairMode,
   HistogramSeries,
   LineSeries,
+  LineStyle,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
@@ -270,13 +271,44 @@ export function TradingChart({
             paneIndex,
           ),
         );
+      } else if (pane === "rsi") {
+        // Three RSI lengths share one pane, with 30/70 guide lines.
+        const colors: Record<string, string> = {
+          rsi14: "#ab47bc",
+          rsi21: "#42a5f5",
+          rsi52: "#ffa726",
+        };
+        let firstRsi: ISeriesApi<SeriesType> | null = null;
+        for (const id of ["rsi14", "rsi21", "rsi52"] as const) {
+          const line = chart.addSeries(
+            LineSeries,
+            {
+              color: colors[id],
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            },
+            paneIndex,
+          );
+          if (!firstRsi) firstRsi = line;
+          seriesRef.current.set(id, line);
+        }
+        for (const level of [30, 70]) {
+          firstRsi?.createPriceLine({
+            price: level,
+            color: "#787b86",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+          });
+        }
       } else {
         seriesRef.current.set(
           pane,
           chart.addSeries(
             LineSeries,
             {
-              color: pane === "rsi" ? "#ab47bc" : "#26a69a",
+              color: "#26a69a",
               lineWidth: 2,
               priceLineVisible: false,
               lastValueVisible: false,
@@ -347,10 +379,15 @@ export function TradingChart({
       }
     }
 
-    // Panes.
+    // Panes. RSI(14) is always computed when RSI divergence is on (the
+    // divergence study runs against it) even if the RSI pane is hidden.
     const rsiData =
       indicators.has("rsi") || indicators.has("divRsi") ? rsi(candles, 14) : [];
-    if (indicators.has("rsi")) setLine("rsi", rsiData);
+    if (indicators.has("rsi")) {
+      setLine("rsi14", rsiData);
+      setLine("rsi21", rsi(candles, 21));
+      setLine("rsi52", rsi(candles, 52));
+    }
     if (indicators.has("macd")) {
       const m = macd(candles);
       setLine("macd.line", m.macd);
@@ -367,18 +404,24 @@ export function TradingChart({
     }
     if (indicators.has("vpin")) setLine("vpin", vpin(candles));
 
-    // Divergence markers (RSI takes precedence, else CVD).
+    // Divergence markers: RSI and CVD can be shown together, each tagged
+    // ("R"/"C") so overlapping signals stay distinguishable.
     if (markersRef.current) {
-      const osc = indicators.has("divRsi") ? rsiData : cvdData;
-      const markers: SeriesMarker<Time>[] = detectDivergences(candles, osc).map(
-        (m) => ({
-          time: ut(m.time),
-          position: m.position,
-          color: m.color,
-          shape: m.shape,
-          text: m.text,
-        }),
-      );
+      const markers: SeriesMarker<Time>[] = [];
+      const add = (tag: string, osc: LinePoint[]): void => {
+        for (const m of detectDivergences(candles, osc)) {
+          markers.push({
+            time: ut(m.time),
+            position: m.position,
+            color: m.color,
+            shape: m.shape,
+            text: `${tag} ${m.text}`,
+          });
+        }
+      };
+      if (indicators.has("divRsi")) add("R", rsiData);
+      if (indicators.has("divCvd")) add("C", cvdData);
+      markers.sort((a, b) => Number(a.time) - Number(b.time));
       markersRef.current.setMarkers(markers);
     }
   }, [series, indicators, normalize, primary, orderFlow]);

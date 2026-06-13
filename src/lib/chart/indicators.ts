@@ -281,13 +281,15 @@ export function ofi(candles: readonly Candle[]): HistPoint[] {
  * tags aggressor side). VPIN is the rolling mean of |buy − sell| / bucketVolume
  * over the last `window` buckets, plotted at each bucket's closing bar time.
  *
- * @param window - Number of buckets in the rolling average (default 50).
+ * @param window - Number of buckets in the rolling average (default 50). It is
+ *   clamped to the bucket count so a short series still produces output.
  * @param bucketsTarget - Approximate number of buckets to split the series into.
+ *   Must comfortably exceed `window` or no points are emitted.
  */
 export function vpin(
   candles: readonly Candle[],
   window = 50,
-  bucketsTarget = 50,
+  bucketsTarget = 200,
 ): LinePoint[] {
   if (!hasOrderFlow(candles)) return [];
   const totalVol = candles.reduce((a, b) => a + (b.volume ?? 0), 0);
@@ -321,13 +323,17 @@ export function vpin(
     }
   }
 
+  // Clamp the rolling window so a series with few buckets still emits points.
+  const w = Math.min(window, buckets.length);
+  if (w < 1) return [];
+
   const out: LinePoint[] = [];
   for (let i = 0; i < buckets.length; i += 1) {
     const end = buckets[i];
-    if (!end || i + 1 < window) continue;
+    if (!end || i + 1 < w) continue;
     let imbalance = 0;
     let vol = 0;
-    for (let j = i - window + 1; j <= i; j += 1) {
+    for (let j = i - w + 1; j <= i; j += 1) {
       const b = buckets[j];
       if (!b) continue;
       imbalance += Math.abs(b.buy - b.sell);
