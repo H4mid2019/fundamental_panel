@@ -1,6 +1,6 @@
 "use client";
 
-import { CandlestickChart, LineChart } from "lucide-react";
+import { CandlestickChart, LineChart, Shield } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 import { toast } from "sonner";
@@ -125,6 +125,13 @@ export default function HomePage() {
           >
             <CandlestickChart className="size-4" aria-hidden />
             Charts
+          </Link>
+          <Link
+            href="/hedge"
+            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <Shield className="size-4" aria-hidden />
+            HedgeScope
           </Link>
           <ThemeToggle />
         </div>

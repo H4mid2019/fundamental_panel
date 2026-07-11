@@ -9,6 +9,9 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { logger } from "../../logger";
+import type { TickerMetrics } from "../metrics/engine";
+import type { PairMetric } from "../metrics/pairs";
+import type { Setup } from "../scanners/types";
 import type { ChainSnapshot } from "../types";
 
 import { getDb, type HedgeDb, type Param } from "./client";
@@ -338,6 +341,198 @@ export function countRealIvDays(ticker: string, db: HedgeDb = getDb()): number {
     { ticker },
   );
   return row?.n ?? 0;
+}
+
+/* ── metrics, pairs, setups ────────────────────────────────────────────────── */
+
+/** Persist one scan's metrics rows. */
+export function insertMetrics(
+  scanId: number,
+  rows: readonly TickerMetrics[],
+  asOf: string,
+  db: HedgeDb = getDb(),
+): void {
+  if (rows.length === 0) return;
+  db.transaction(() => {
+    for (const m of rows) {
+      db.run(
+        `INSERT OR REPLACE INTO metrics (
+           scan_id, ticker, as_of, spot,
+           risk_free_rate, dividend_yield, rates_fallback,
+           atm_iv, atm_iv_30d, atm_iv_90d, atm_30d_bracketed,
+           iv_rank, iv_percentile, iv_rank_proxied, iv_history_days,
+           put_skew_25d, put_skew_z, call_put_spread, call_put_spread_z,
+           skew_25d_bracketed, term_slope, term_slope_z, term_inverted, front_dte,
+           ewma_vol, vrp, vrp_z,
+           realized_vol_20d, pct_vs_200dma, pct_from_52w_high, pct_from_52w_low, rsi14,
+           corr_spy_60d, earnings_date, earnings_in_front_window, ex_dividend_date,
+           contracts_total, contracts_excluded, parity_violations, data_quality
+         ) VALUES (
+           :scanId, :ticker, :asOf, :spot,
+           :r, :q, :ratesFallback,
+           :atmIv, :atmIv30, :atmIv90, :atm30Bracketed,
+           :ivRank, :ivPercentile, :ivRankProxied, :ivHistoryDays,
+           :putSkew, :putSkewZ, :callPutSpread, :callPutSpreadZ,
+           :skewBracketed, :termSlope, :termSlopeZ, :termInverted, :frontDte,
+           :ewmaVol, :vrp, :vrpZ,
+           :rv20, :pct200, :pct52h, :pct52l, :rsi,
+           :corr, :earnings, :earningsIn, :exDiv,
+           :cTotal, :cExcluded, :parity, :quality
+         )`,
+        {
+          scanId,
+          ticker: m.ticker,
+          asOf,
+          spot: m.spot,
+          r: m.riskFreeRate,
+          q: m.dividendYield,
+          ratesFallback: m.ratesFallback ? 1 : 0,
+          // Stored in vol points, matching `history.atm_iv`.
+          atmIv: m.atmIv30 !== null ? m.atmIv30 * 100 : null,
+          atmIv30: m.atmIv30 !== null ? m.atmIv30 * 100 : null,
+          atmIv90: m.atmIv90 !== null ? m.atmIv90 * 100 : null,
+          atm30Bracketed: m.atm30Bracketed ? 1 : 0,
+          ivRank: m.ivRank,
+          ivPercentile: m.ivPercentile,
+          ivRankProxied: m.ivRankProxied ? 1 : 0,
+          ivHistoryDays: m.ivHistoryDays,
+          putSkew: m.putSkew25d,
+          putSkewZ: m.putSkewZ,
+          callPutSpread: m.callPutSpread,
+          callPutSpreadZ: m.callPutSpreadZ,
+          skewBracketed: m.skew25dBracketed ? 1 : 0,
+          termSlope: m.termSlope,
+          termSlopeZ: m.termSlopeZ,
+          termInverted: m.termInverted ? 1 : 0,
+          frontDte: m.frontDte,
+          ewmaVol: m.ewmaVol,
+          vrp: m.vrp,
+          vrpZ: m.vrpZ,
+          rv20: m.realizedVol20d,
+          pct200: m.pctVs200dma,
+          pct52h: m.pctFrom52wHigh,
+          pct52l: m.pctFrom52wLow,
+          rsi: m.rsi14,
+          corr: m.corrSpy60d,
+          earnings: m.earningsDate,
+          earningsIn: m.earningsInFrontWindow ? 1 : 0,
+          exDiv: m.exDividendDate,
+          cTotal: m.contractsTotal,
+          cExcluded: m.contractsExcluded,
+          parity: m.parityViolations,
+          quality: m.dataQuality,
+        } satisfies Record<string, Param>,
+      );
+    }
+  });
+}
+
+/** Read a scan's metrics rows as the raw JSON the API serves. */
+export function getMetricsForScan(
+  scanId: number,
+  db: HedgeDb = getDb(),
+): Record<string, unknown>[] {
+  return db.all<Record<string, unknown>>(
+    "SELECT * FROM metrics WHERE scan_id = :scanId ORDER BY ticker",
+    { scanId },
+  );
+}
+
+/** Persist one scan's pair metrics. */
+export function insertPairMetrics(
+  scanId: number,
+  pairs: readonly PairMetric[],
+  db: HedgeDb = getDb(),
+): void {
+  if (pairs.length === 0) return;
+  db.transaction(() => {
+    for (const p of pairs) {
+      db.run(
+        `INSERT OR REPLACE INTO pair_metrics
+           (scan_id, pair_id, ratio, mean, sd, zscore, ou_lambda, half_life,
+            mean_reversion, cointegration)
+         VALUES
+           (:scanId, :pairId, :ratio, :mean, :sd, :z, :lambda, :halfLife,
+            :meanReversion, :cointegration)`,
+        {
+          scanId,
+          pairId: p.pairId,
+          ratio: p.ratio,
+          mean: p.mean,
+          sd: p.sd,
+          z: p.zScore,
+          lambda: p.ouLambda,
+          halfLife: p.halfLife,
+          meanReversion: p.meanReversion,
+          cointegration: p.cointegration,
+        } satisfies Record<string, Param>,
+      );
+    }
+  });
+}
+
+/** Persist one scan's ranked setups. */
+export function insertSetups(
+  scanId: number,
+  ranked: Record<string, readonly Setup[]>,
+  db: HedgeDb = getDb(),
+): void {
+  db.transaction(() => {
+    for (const [scanner, setups] of Object.entries(ranked)) {
+      setups.forEach((s, index) => {
+        db.run(
+          `INSERT OR REPLACE INTO setups
+             (scan_id, scanner, ticker, rank, score, proxied, signal_hash, payload)
+           VALUES
+             (:scanId, :scanner, :ticker, :rank, :score, :proxied, :hash, :payload)`,
+          {
+            scanId,
+            scanner,
+            ticker: s.ticker,
+            rank: index + 1,
+            score: s.score,
+            proxied: s.proxied ? 1 : 0,
+            hash: s.signalHash,
+            payload: JSON.stringify(s),
+          } satisfies Record<string, Param>,
+        );
+      });
+    }
+  });
+}
+
+/** Read a scan's setups for one scanner, best-first. */
+export function getSetups(
+  scanId: number,
+  scanner: string,
+  db: HedgeDb = getDb(),
+): Setup[] {
+  const rows = db.all<{ payload: string }>(
+    `SELECT payload FROM setups
+      WHERE scan_id = :scanId AND scanner = :scanner
+      ORDER BY rank ASC`,
+    { scanId, scanner },
+  );
+  const out: Setup[] = [];
+  for (const r of rows) {
+    try {
+      out.push(JSON.parse(r.payload) as Setup);
+    } catch {
+      logger.warn("hedge.db: corrupt setup payload", { scanId, scanner });
+    }
+  }
+  return out;
+}
+
+/** Read a scan's pair metrics. */
+export function getPairMetrics(
+  scanId: number,
+  db: HedgeDb = getDb(),
+): Record<string, unknown>[] {
+  return db.all<Record<string, unknown>>(
+    "SELECT * FROM pair_metrics WHERE scan_id = :scanId ORDER BY pair_id",
+    { scanId },
+  );
 }
 
 /** A summary of how much history has accumulated, for the health endpoint. */

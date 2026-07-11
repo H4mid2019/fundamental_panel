@@ -117,22 +117,24 @@ fail fast.
 
 ## Scripts
 
-| Script                 | Description                                 |
-| ---------------------- | ------------------------------------------- |
-| `npm run dev`          | Start the dev server                        |
-| `npm run build`        | Production build                            |
-| `npm run start`        | Serve the production build                  |
-| `npm run lint`         | ESLint (zero warnings allowed)              |
-| `npm run lint:fix`     | ESLint with autofix                         |
-| `npm run format`       | Prettier write                              |
-| `npm run format:check` | Prettier check                              |
-| `npm run typecheck`    | `tsc --noEmit`                              |
-| `npm run test`         | Vitest unit tests with coverage             |
-| `npm run test:watch`   | Vitest watch mode                           |
-| `npm run test:e2e`     | Playwright smoke test (builds + serves app) |
-| `npm run check`        | lint + format:check + typecheck + test      |
-| `npm run check:apis`   | Live health-check of configured API keys    |
-| `npm run analyze`      | Bundle analysis (`@next/bundle-analyzer`)   |
+| Script                 | Description                                  |
+| ---------------------- | -------------------------------------------- |
+| `npm run dev`          | Start the dev server                         |
+| `npm run build`        | Production build                             |
+| `npm run start`        | Serve the production build                   |
+| `npm run lint`         | ESLint (zero warnings allowed)               |
+| `npm run lint:fix`     | ESLint with autofix                          |
+| `npm run format`       | Prettier write                               |
+| `npm run format:check` | Prettier check                               |
+| `npm run typecheck`    | `tsc --noEmit`                               |
+| `npm run test`         | Vitest unit tests with coverage              |
+| `npm run test:watch`   | Vitest watch mode                            |
+| `npm run test:e2e`     | Playwright smoke test (builds + serves app)  |
+| `npm run check`        | lint + format:check + typecheck + test       |
+| `npm run check:apis`   | Live health-check of configured API keys     |
+| `npm run hedge:scan`   | Trigger a HedgeScope scan (needs the server) |
+| `npm run hedge:health` | Schema version, last scan, IV-rank readiness |
+| `npm run analyze`      | Bundle analysis (`@next/bundle-analyzer`)    |
 
 ---
 
@@ -346,6 +348,72 @@ proxied value is flagged as such in the API payload (`ivRankProxied`,
 `ivHistoryDays`) and badged in the UI. Setups still rank and display from day one;
 you can just see exactly how much to trust them. The threshold at which a ticker
 graduates to a real IV rank is `metrics.ivRankMinRealDays` (default 60).
+
+### The five scanners
+
+Each emits **concrete, tradeable legs** — a strike and an expiry you could send to
+a broker — not an abstract score. A ranked list with no strikes attached is a
+screener that has done half the job.
+
+| Scanner               | Admission                                   | Ranked by                     |
+| --------------------- | ------------------------------------------- | ----------------------------- |
+| Protective put        | IV rank < 25 **and** price > 200-day MA     | cheapness + VRP               |
+| Put debit spread      | put-skew z-score > 0.5                      | skew steepness + payoff ratio |
+| Call credit / covered | IV rank > 70 **and** price > +8% vs 200d MA | IV rank + yield on risk       |
+| Collar                | 20–30Δ call, 20–25Δ put exist               | call-minus-put IV spread      |
+| Tail hedge            | market regime, not per-ticker               | composite (see below)         |
+
+Every setup carries its **warnings** — earnings inside the tenor, early-assignment
+risk, a wide market, thin open interest, a stale chain, a proxied IV rank. These
+are load-bearing, not decoration: a top-ranked setup with three warnings is not
+actually the best trade on the board, and the UI shows them next to the rank.
+
+**Early-assignment risk (short calls)** is not "there is a dividend in the tenor" —
+every quarterly payer has one, and flagging them all would make the penalty
+meaningless. It fires only on the condition that actually matters:
+
+```text
+extrinsic = callMid − max(0, S − K)
+at risk when:  an ex-dividend falls before expiry
+          AND  extrinsic < dividend × exDivBuffer
+```
+
+Ex-dividend dates for **ETFs** are projected from the observed payment cadence,
+because Yahoo's `calendarEvents` returns nothing at all for them — yet TLT pays
+_monthly_ and a short TLT call carries very real assignment risk.
+
+**Tail hedge** is a regime detector, not a screen. It looks for one disagreement:
+_credit deteriorating while equity vol is still asleep._ Credit usually moves
+first. Note the sign on skew — a **flat** skew means the tail is cheap; a steep one
+means it is already bid, and there is nothing on sale.
+
+### What you will see on day one
+
+`protectivePut`, `putDebitSpread` and `callCredit` are gated on IV rank and skew
+z-scores, and **those need accumulated history that does not exist yet**. On a
+fresh install they will correctly return nothing. The collar and tail-hedge
+scanners work immediately, because they read today's chain rather than its
+history. This is honest behaviour, not a bug — and it is exactly why VRP, which
+needs no history at all, is the signal to trust in the first weeks.
+
+### Alerts
+
+Alerts fire on z-score crossings (±2.5), term-structure inversions, correlation
+regime breaks, stale chains, and a scanner's top setup crossing its threshold.
+
+They are **deduped per `(ticker, type)` on a cooldown** (default 3 days), and that
+matters more than it sounds: a z-score across ±2.5 will still be across it at the
+next scan, and the one after that. Firing every time turns the feed into
+wallpaper — and wallpaper gets ignored, which is worse than no alert at all,
+because you will stop reading the one that matters.
+
+Pair alerts additionally require the pair to **pass the mean-reversion test**.
+Alerting on a stretched spread that never reverts is an invitation to fade a
+permanent trend.
+
+> ⚠️ **Alerts only fire when a scan runs.** There is no background watcher. With no
+> `SLACK_WEBHOOK_URL` configured, alerts exist solely in the database and on the
+> dashboard — there is no push notification when the tab is closed.
 
 ### Scanning
 

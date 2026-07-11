@@ -59,6 +59,15 @@ class IoRedisCache implements CacheBackend {
   }
 }
 
+/**
+ * The native Redis client, when one is configured.
+ *
+ * Exposed only so {@link tryAcquireLock} can issue `SET NX PX`, which the cache
+ * abstraction deliberately does not model — a lock is not a cache entry, and
+ * conflating them would let a lock be silently evicted under memory pressure.
+ */
+let ioredisClient: IORedis | null = null;
+
 function createBackend(): CacheBackend {
   if (features.redisUrl && env.REDIS_URL) {
     logger.info("cache.backend", { backend: "redis" });
@@ -68,6 +77,7 @@ function createBackend(): CacheBackend {
       lazyConnect: false,
     });
     client.on("error", (error) => logger.warn("redis client error", { error }));
+    ioredisClient = client;
     return new IoRedisCache(client);
   }
   if (
@@ -141,4 +151,66 @@ export async function cached<T>(
   const value = await compute();
   await setCached(key, value, ttlSeconds);
   return value;
+}
+
+/** In-process locks, used when no Redis is configured. */
+const memoryLocks = new Map<string, number>();
+
+/**
+ * Try to take a mutually-exclusive lock.
+ *
+ * Backed by Redis `SET NX PX` when `REDIS_URL` is configured, which is what makes
+ * it safe across *processes* — the case that matters once the scanner runs in its
+ * own container alongside the web one. Without Redis it degrades to an in-process
+ * guard, which is still correct for a single-container deployment but cannot see
+ * a second process.
+ *
+ * The TTL is the safety net: if the holder crashes mid-scan, the lock expires
+ * rather than wedging the scheduler forever.
+ *
+ * @param key - Lock name.
+ * @param ttlSeconds - How long the lock survives without being released.
+ * @returns True when the lock was acquired.
+ */
+export async function tryAcquireLock(
+  key: string,
+  ttlSeconds: number,
+): Promise<boolean> {
+  const client = ioredisClient;
+  if (client) {
+    try {
+      const result = await client.set(key, "1", "PX", ttlSeconds * 1000, "NX");
+      return result === "OK";
+    } catch (error) {
+      logger.warn("lock: redis failed; falling back to in-process", {
+        key,
+        error,
+      });
+    }
+  }
+
+  const now = Date.now();
+  const held = memoryLocks.get(key);
+  if (held !== undefined && held > now) return false;
+  memoryLocks.set(key, now + ttlSeconds * 1000);
+  return true;
+}
+
+/**
+ * Release a lock taken with {@link tryAcquireLock}.
+ *
+ * @param key - Lock name.
+ */
+export async function releaseLock(key: string): Promise<void> {
+  memoryLocks.delete(key);
+  const client = ioredisClient;
+  if (!client) return;
+  try {
+    await client.del(key);
+  } catch (error) {
+    logger.warn("lock: redis release failed; it will expire on its own", {
+      key,
+      error,
+    });
+  }
 }

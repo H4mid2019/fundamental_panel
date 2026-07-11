@@ -41,13 +41,23 @@ function seed(ticker: string): number {
   return (h >>> 0) / 0xffffffff;
 }
 
-/** Strike ladder granularity, mirroring how real chains are listed. */
+/**
+ * Strike ladder granularity, mirroring how real chains are listed.
+ *
+ * Roughly 0.5% of spot, snapped to a plausible increment. Density matters more
+ * than it looks: a liquid name lists strikes fine enough that a 20-30 delta
+ * contract actually *exists*, and a scanner asked for one on a coarse ladder can
+ * find the band skipped entirely between two adjacent rungs. A fixture with an
+ * unrealistically coarse ladder would make the scanners look broken when they are
+ * not — and, worse, would hide the case where a genuinely thin chain has no such
+ * strike and the scanner is right to decline.
+ */
 function strikeStep(spot: number): number {
-  if (spot >= 500) return 10;
-  if (spot >= 200) return 5;
-  if (spot >= 50) return 2.5;
-  if (spot >= 20) return 1;
-  return 0.5;
+  const raw = spot * 0.005;
+  for (const step of [0.5, 1, 2.5, 5]) {
+    if (raw <= step) return step;
+  }
+  return 10;
 }
 
 /** Parameters of the fixture's volatility surface. Exported for tests to assert against. */

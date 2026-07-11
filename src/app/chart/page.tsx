@@ -1,6 +1,6 @@
 "use client";
 
-import { CandlestickChart, ArrowLeft } from "lucide-react";
+import { CandlestickChart, ArrowLeft, Shield } from "lucide-react";
 import Link from "next/link";
 
 import { ChartWorkspace } from "@/components/chart/ChartWorkspace";
@@ -16,6 +16,13 @@ export default function ChartPage(): React.JSX.Element {
           <h1 className="text-lg font-semibold sm:text-xl">Charts</h1>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/hedge"
+            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <Shield className="size-4" aria-hidden />
+            HedgeScope
+          </Link>
           <Link
             href="/"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
