@@ -39,6 +39,15 @@ real bug, caught against live data:
 - **Never extrapolate.** Delta-space and tenor interpolation both return `null`
   outside their data range. A clamped value is indistinguishable from a real one
   downstream, which is worse than an absent one.
+- **In `upsertHistory`, the `atm_iv_proxied` / `atm_iv_basis` flags travel with the
+  value.** They are adopted only when the incoming row actually brings an ATM IV.
+  Stamping them unconditionally let a backfill row (`atm_iv = NULL`) keep a real
+  observation's value while relabelling it a proxy — so re-running a backfill after
+  months of scans silently erased the real IV history of every ticker without a CBOE
+  index.
+- **IV is always solved from the bid/ask mid**, never Yahoo's `impliedVolatility`
+  field, which is derived from a stale `lastPrice` (a live pull showed a 2-DTE
+  near-ATM SPY call quoting 5.5% IV).
 
 ## Data limits that are facts, not laziness
 
