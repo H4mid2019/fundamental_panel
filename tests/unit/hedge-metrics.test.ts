@@ -14,6 +14,11 @@ import { ivAtDelta } from "@/lib/hedge/math/interpolation";
 import { delta } from "@/lib/hedge/math/blackScholes";
 import type { Candle } from "@/lib/chart/types";
 import type { HistoryRow } from "@/lib/hedge/db/repo";
+import type {
+  ChainSnapshot,
+  HedgeContract,
+  OptionRight,
+} from "@/lib/hedge/types";
 
 import { readFileSync } from "node:fs";
 
@@ -123,6 +128,141 @@ describe("buildSurface", () => {
 
   it("rejects a snapshot with no spot instead of computing against null", () => {
     expect(buildSurface({ ...snapshot, spot: null }, rates, config)).toBeNull();
+  });
+});
+
+/**
+ * The data-quality badge answers exactly one question: is this chain stale?
+ *
+ * A parity violation excludes its strike from every metric either way — that is
+ * not negotiable and is not what these tests are about. What they pin down is
+ * how the violation is BOOKED, because the badge used to apply two different
+ * standards to the identical worthless contract: a penny wing counted as
+ * `illiquid` (harmless) when the spread screen caught it, but as bad data when
+ * parity caught it first. Thin ETFs were badged `degraded` for having tails.
+ */
+describe("buildSurface: parity attribution", () => {
+  const snapshot = fixtureChainSnapshot("SPY", now);
+  const spot = snapshot.spot ?? 0;
+  const monthly = snapshot.expiries.find((e) => e.standardMonthly);
+
+  /** A copy of the snapshot with one contract's quote replaced. */
+  function withQuote(
+    snap: ChainSnapshot,
+    expiration: string,
+    right: OptionRight,
+    strike: number,
+    bid: number,
+    ask: number,
+  ): ChainSnapshot {
+    const patch = (cs: HedgeContract[]): HedgeContract[] =>
+      cs.map((c) => (c.strike === strike ? { ...c, bid, ask } : c));
+    return {
+      ...snap,
+      expiries: snap.expiries.map((e) =>
+        e.expiration !== expiration
+          ? e
+          : right === "call"
+            ? { ...e, calls: patch(e.calls) }
+            : { ...e, puts: patch(e.puts) },
+      ),
+    };
+  }
+
+  it("counts a stale leg on an INFORMATIVE quote against the badge", () => {
+    expect(monthly).toBeDefined();
+    if (!monthly) return;
+
+    // The strike nearest the money: a real premium, a tight market, the highest
+    // vega on the chain — precisely the quote the metrics would have used.
+    const atm = [...monthly.calls].sort(
+      (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
+    )[0];
+    expect(atm).toBeDefined();
+    if (!atm) return;
+
+    // Walk the call $10 away from its put without widening the market, so the
+    // pair can no longer satisfy C - P = e^{-rT}(F - K). One strike cannot drag
+    // the implied forward with it — the forward is a median, which is the point.
+    const bid = (atm.bid ?? 0) + 10;
+    const broken = withQuote(
+      snapshot,
+      monthly.expiration,
+      "call",
+      atm.strike,
+      bid,
+      bid + 0.02,
+    );
+
+    const base = buildSurface(snapshot, rates, config);
+    const surface = buildSurface(broken, rates, config);
+    if (!base || !surface) throw new Error("surface should build");
+
+    // A stale leg on a quote worth having IS a stale chain. It must show.
+    expect(surface.quality.parityViolations).toBeGreaterThan(0);
+    expect(surface.quality.contractsExcluded).toBeGreaterThan(
+      base.quality.contractsExcluded,
+    );
+  });
+
+  it("books a dead wing that fails parity as illiquid, not as bad data", () => {
+    const base = buildSurface(snapshot, rates, config);
+    if (!base) throw new Error("surface should build");
+
+    // The shortest-dated monthly, whose ladder reaches far enough out that the
+    // deepest call has no vega left — which is what makes it a DEAD wing.
+    const shortMonthly = [...snapshot.expiries]
+      .filter((e) => e.standardMonthly)
+      .sort((a, b) => a.dte - b.dte)[0];
+    expect(shortMonthly).toBeDefined();
+    if (!shortMonthly) return;
+
+    const wingStrike = Math.max(...shortMonthly.calls.map((c) => c.strike));
+    const baseExpiry = base.expiries.find(
+      (e) => e.expiration === shortMonthly.expiration,
+    );
+    expect(baseExpiry).toBeDefined();
+    if (!baseExpiry) return;
+
+    // It is a candidate (out of the money) and yet the CLEAN chain already books
+    // it as illiquid rather than usable, because no volatility is recoverable
+    // from it. Asserting that up front is the point: it is what makes this a dead
+    // wing rather than merely a distant one, and the whole test rests on it.
+    expect(wingStrike).toBeGreaterThan(spot);
+    expect(baseExpiry.calls.some((p) => p.strike === wingStrike)).toBe(false);
+
+    // Now stale the deep in-the-money put twin — the leg that actually goes stale
+    // on a real chain. The twin is never a candidate itself (deep ITM, far
+    // outside the near-forward band), so the only contract parity can condemn at
+    // this strike is the worthless wing above it.
+    const twin = shortMonthly.puts.find((p) => p.strike === wingStrike);
+    expect(twin).toBeDefined();
+    if (!twin) return;
+
+    const broken = withQuote(
+      snapshot,
+      shortMonthly.expiration,
+      "put",
+      wingStrike,
+      (twin.bid ?? 0) - 10,
+      (twin.ask ?? 0) - 10,
+    );
+    const surface = buildSurface(broken, rates, config);
+    if (!surface) throw new Error("surface should build");
+
+    // The wing stays excluded from every metric — that is not in question. But it
+    // is not evidence of a stale chain: no volatility was recoverable from it
+    // anyway, so dropping it costs the surface nothing and must not move the
+    // grade. Before the attribution fix this booked a defect and a parity
+    // violation, and badged a chain with dead tails `degraded`.
+    expect(surface.quality.parityViolations).toBe(0);
+    expect(surface.quality.contractsExcluded).toBe(
+      base.quality.contractsExcluded,
+    );
+    expect(surface.quality.contractsIlliquid).toBe(
+      base.quality.contractsIlliquid,
+    );
+    expect(surface.quality.quality).toBe("good");
   });
 });
 

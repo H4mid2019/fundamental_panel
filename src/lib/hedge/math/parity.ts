@@ -325,6 +325,15 @@ export interface DataQualityReport {
   contractsExcluded: number;
   /** Contracts dropped as uninformative or illiquid. Not a quality failure. */
   contractsIlliquid: number;
+  /**
+   * Contracts that were informative and still failed parity — a stale leg on a
+   * quote worth having. A subset of `contractsExcluded`, and the honest measure
+   * of how stale a chain is.
+   *
+   * A parity failure on a contract that carried no signal anyway is counted as
+   * illiquid instead. It is still excluded from every metric; it just does not
+   * condemn the chain, for the same reason a dead tail does not.
+   */
   parityViolations: number;
   /** Fraction of candidates free of *defects*, in [0, 1]. */
   goodFraction: number;

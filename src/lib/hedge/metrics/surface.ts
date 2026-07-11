@@ -88,6 +88,14 @@ export interface ExpirySurface {
   contractsExcluded: number;
   /** Dropped as uninformative or too wide to price. Not a quality failure. */
   contractsIlliquid: number;
+  /**
+   * Contracts that were **informative** and still failed parity — a stale leg on
+   * a quote worth having. A subset of `contractsExcluded`.
+   *
+   * A parity failure on a contract that carried no signal anyway (a penny wing)
+   * is counted in `contractsIlliquid` instead: it is still excluded from every
+   * metric, but a chain is not stale merely because its tails are dead.
+   */
   parityViolations: number;
 }
 
@@ -181,7 +189,6 @@ function buildExpiry(
   const effectiveRates: RateContext = { ...rates, q };
 
   const rejected = new Set<number>();
-  let parityViolations = 0;
 
   if (implied !== null) {
     for (const pair of pairs) {
@@ -191,10 +198,7 @@ function buildExpiry(
         parityLimits,
         implied.uncertainty,
       );
-      if (check.reason === "parity_violation") {
-        parityViolations += 1;
-        rejected.add(pair.strike);
-      }
+      if (check.reason === "parity_violation") rejected.add(pair.strike);
     }
   }
 
@@ -210,6 +214,67 @@ function buildExpiry(
   //               badged `poor` merely for having tails.
   let defects = 0;
   let noSignal = 0;
+  let parityViolations = 0;
+
+  /** What a contract is worth judged on its own quote, parity aside. */
+  type Screen =
+    | { kind: "usable"; point: SurfacePoint }
+    | { kind: "defect" }
+    | { kind: "no_signal" };
+
+  /**
+   * Grade one contract on its own quote — deliberately blind to parity, so that
+   * the caller can ask "was this contract informative at all?" independently of
+   * whether parity condemned its strike.
+   */
+  const screen = (c: HedgeContract): Screen => {
+    if (quality.requireTwoSidedQuote && (c.bid === null || c.ask === null)) {
+      return { kind: "defect" };
+    }
+
+    const mid = midOf(c);
+    // A crossed market (ask < bid) is a defect, not merely a thin one.
+    if (mid === null) return { kind: "defect" };
+
+    const relSpread =
+      c.bid !== null && c.ask !== null ? (c.ask - c.bid) / mid : Infinity;
+    if (relSpread > quality.maxRelativeSpread) return { kind: "no_signal" };
+
+    const iv = impliedVolatility(
+      mid,
+      { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q },
+      c.right,
+    );
+
+    // `null` means no volatility is recoverable from this price at all — the
+    // honest answer for a penny wing, and not a data defect.
+    if (iv === null) return { kind: "no_signal" };
+    // An IV outside the plausible band, however, IS suspicious data.
+    if (iv < quality.minIv || iv > quality.maxIv) return { kind: "defect" };
+
+    const absDelta = Math.abs(
+      delta(
+        { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q, sigma: iv },
+        c.right,
+      ),
+    );
+    if (!Number.isFinite(absDelta) || absDelta <= 0 || absDelta >= 1) {
+      return { kind: "no_signal" };
+    }
+
+    return {
+      kind: "usable",
+      point: {
+        strike: c.strike,
+        right: c.right,
+        iv,
+        absDelta,
+        mid,
+        openInterest: c.openInterest,
+        relSpread,
+      },
+    };
+  };
 
   const usable = (c: HedgeContract): SurfacePoint | null => {
     // Out-of-the-money contracts, plus anything near the forward.
@@ -231,68 +296,51 @@ function buildExpiry(
       Math.abs(Math.log(c.strike / forward)) <= NEAR_FORWARD_BAND;
     if (!otm && !nearForward) return null;
 
+    const verdict = screen(c);
+
+    // A parity-violating strike is dropped from every metric either way — one of
+    // its legs is stale, and an IV solved from a stale quote is wrong rather than
+    // merely noisy. What the violation does NOT settle is whether the CHAIN is
+    // stale, which is the only question the badge asks.
+    //
+    // So the contract is screened on its own quote first, and parity counts
+    // against the grade only when that screen found it informative. A penny wing
+    // that violates parity is still just a penny wing: no volatility was
+    // recoverable from it, the spread and vega screens would have dropped it
+    // anyway as `no_signal`, and dropping it costs the surface nothing. Booking
+    // it as a defect merely because parity happened to test it first applies two
+    // different standards to the identical worthless contract — and that, not a
+    // tight threshold, is what badged the thin ETFs `degraded` for having tails.
+    //
+    // Measured live (2026-07-12, ~3,000 pairs): parity rejected 70.8% of
+    // contracts more than 20% out of the money but only 2.0% of those within 2%
+    // of the forward, so the informative core of every chain was clean while the
+    // wings were not. The rejected contracts had a median last trade 101 days old
+    // and a median open interest of ZERO, against 4 days and 71 for the accepted
+    // ones — they are genuinely dead, not victims of a tight threshold, and the
+    // threshold is deliberately NOT touched here. Loosening it to admit them was
+    // measured too: it recovers almost nothing (23.1% -> 14.9% of pairs at a 6x
+    // looser multiple) and what it readmits is quotes months stale, which is the
+    // exact poison the check exists to keep out of the metrics.
     if (rejected.has(c.strike)) {
-      defects += 1;
+      if (verdict.kind === "no_signal") {
+        noSignal += 1;
+      } else {
+        parityViolations += 1;
+        defects += 1;
+      }
       return null;
     }
 
-    if (quality.requireTwoSidedQuote && (c.bid === null || c.ask === null)) {
+    if (verdict.kind === "defect") {
       defects += 1;
       return null;
     }
-
-    const mid = midOf(c);
-    if (mid === null) {
-      // A crossed market (ask < bid) is a defect, not merely a thin one.
-      defects += 1;
-      return null;
-    }
-
-    const relSpread =
-      c.bid !== null && c.ask !== null ? (c.ask - c.bid) / mid : Infinity;
-    if (relSpread > quality.maxRelativeSpread) {
+    if (verdict.kind === "no_signal") {
       noSignal += 1;
       return null;
     }
-
-    const iv = impliedVolatility(
-      mid,
-      { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q },
-      c.right,
-    );
-
-    // `null` means no volatility is recoverable from this price at all — the
-    // honest answer for a penny wing, and not a data defect.
-    if (iv === null) {
-      noSignal += 1;
-      return null;
-    }
-    // An IV outside the plausible band, however, IS suspicious data.
-    if (iv < quality.minIv || iv > quality.maxIv) {
-      defects += 1;
-      return null;
-    }
-
-    const absDelta = Math.abs(
-      delta(
-        { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q, sigma: iv },
-        c.right,
-      ),
-    );
-    if (!Number.isFinite(absDelta) || absDelta <= 0 || absDelta >= 1) {
-      noSignal += 1;
-      return null;
-    }
-
-    return {
-      strike: c.strike,
-      right: c.right,
-      iv,
-      absDelta,
-      mid,
-      openInterest: c.openInterest,
-      relSpread,
-    };
+    return verdict.point;
   };
 
   const calls = expiry.calls
