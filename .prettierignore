@@ -7,3 +7,9 @@ pnpm-lock.yaml
 package-lock.json
 *.lock
 next-env.d.ts
+
+# Scratch prompt/spec docs kept in the working tree; not part of the codebase.
+claude-code-prompt-*.md
+
+# SQLite database + WAL files (HedgeScope's accumulated IV history).
+data/
