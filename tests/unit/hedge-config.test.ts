@@ -37,7 +37,11 @@ describe("parseHedgeConfig", () => {
     expect(config.context.benchmark).toBe("SPY");
     // The VIX term structure needs at least two points to have a slope.
     expect(config.context.vixTerm.length).toBeGreaterThanOrEqual(2);
-    expect(config.chain.targetDte).toEqual([30, 90, 180]);
+    expect(config.chain.tenors.skew).toEqual([30, 60, 90, 180]);
+    // A sub-30-DTE term tenor must exist, or nothing brackets the 30-day point
+    // and VRP's constant-maturity ATM IV becomes uncomputable.
+    expect(config.chain.tenors.term.some((t) => t < 30)).toBe(true);
+    expect(config.chain.minDte).toBeLessThan(30);
     expect(config.schedule.timezone).toBe("America/New_York");
     expect(config.pairs.list.map((p) => p.id)).toContain("gld-gdx");
   });

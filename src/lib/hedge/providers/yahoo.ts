@@ -262,13 +262,13 @@ export class YahooChainProvider implements ChainProvider {
   async getChainSnapshot(
     request: ChainRequest,
   ): Promise<Result<ChainSnapshot, AppError>> {
-    const { ticker, targetDte, now } = request;
+    const { ticker, tenors, now } = request;
 
     if (features.forceFixtures) {
-      return ok(fixtureChainSnapshot(ticker, now, targetDte));
+      return ok(fixtureChainSnapshot(ticker, now, tenors));
     }
 
-    const key = `hedge:chain:${ticker}:${targetDte.join("-")}:${toIsoDate(now)}`;
+    const key = `hedge:chain:${ticker}:${tenors.skew.join("-")}:${tenors.term.join("-")}:${toIsoDate(now)}`;
     const snapshot = await cached<ChainSnapshot | null>(
       key,
       this.opts.cacheTtlSeconds,
@@ -288,7 +288,7 @@ export class YahooChainProvider implements ChainProvider {
   private async fetchSnapshot(
     request: ChainRequest,
   ): Promise<ChainSnapshot | null> {
-    const { ticker, targetDte, minDte, now } = request;
+    const { ticker, tenors, minDte, now } = request;
 
     // Call one: the expiration list and the underlying quote. Yahoo also
     // returns the front chain here, but the front expiration is a short-dated
@@ -316,7 +316,7 @@ export class YahooChainProvider implements ChainProvider {
       return null;
     }
 
-    const selected = selectExpiries(available, targetDte, minDte, now);
+    const selected = selectExpiries(available, tenors, minDte, now);
     if (selected.length === 0) {
       logger.warn("hedge.yahoo: no expiration at or beyond minDte; skipping", {
         ticker,
@@ -351,7 +351,8 @@ export class YahooChainProvider implements ChainProvider {
         expiration: sel.expiration,
         dte: sel.dte,
         standardMonthly: sel.standardMonthly,
-        targetDte: sel.targetDte,
+        targetDtes: sel.targetDtes,
+        usableForSkew: sel.usableForSkew,
         calls: (leg.calls ?? []).map((c) =>
           mapContract(c, "call", sel.expiration),
         ),

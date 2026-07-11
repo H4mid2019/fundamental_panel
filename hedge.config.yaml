@@ -129,13 +129,24 @@ schedule:
 # Yahoo returns ONE expiration's chain per HTTP call, so the tenor list below is
 # the per-ticker call budget. Keep it small: universe × tenors = calls per scan.
 chain:
-  # Target days-to-expiry. For each, the scan picks the nearest *standard monthly*
-  # (3rd Friday) expiration at or beyond `minDte`. Monthlies matter: weeklies list
-  # far fewer strikes (AAPL's 8/14 weekly spans 200-335; the 8/21 monthly spans
-  # 110-600), and a 25-delta search on a thin chain silently picks a bad strike.
-  targetDte: [30, 90, 180]
+  # Two tenor lists, because the wings and the at-the-money point have different
+  # requirements.
+  tenors:
+    # `skew` tenors resolve to standard monthlies (3rd Friday) ONLY. A 25-delta
+    # strike needs a deep strike ladder, and a weekly's is far too shallow:
+    # AAPL's 8/14 weekly listed strikes 200-335 while the 8/21 monthly listed
+    # 110-600. A 25-delta search on the weekly silently clamps to the edge of
+    # the ladder, making every skew number quietly wrong rather than absent.
+    skew: [30, 60, 90, 180]
+    # `term` tenors may resolve to ANY expiration, weeklies included — ATM
+    # strikes are listed on every expiry, so ATM IV is safe there. This exists
+    # to bracket the 30-day point from below: without a sub-30-DTE expiry, a
+    # constant-maturity 30d ATM IV (which VRP is defined against) could only be
+    # extrapolated, and extrapolating it is not allowed.
+    term: [14]
   # Never select an expiration closer than this (gamma/pin noise, garbage IV).
-  minDte: 21
+  # Must stay below 30 or nothing can bracket the 30-day point.
+  minDte: 10
   # Concurrent Yahoo requests. Yahoo will 429 an aggressive scan; 3 is polite.
   concurrency: 3
   # Random jitter (ms) added between requests to avoid a synchronized burst.
@@ -170,13 +181,39 @@ metrics:
   # out of to count as a regime change.
   correlationWindowDays: 60
   correlationRegimeLookbackDays: 756
-  # Realized-vol window used for price context and as the IV-rank proxy basis.
+  # Realized-vol window used for price context.
   realizedVolWindowDays: 20
-  # Risk-free rate for Black-Scholes. `source: tnx` reads the live 10y yield from
-  # ^TNX and falls back to `fallbackRate` when unavailable.
+
+  # Risk-free rate for Black-Scholes. `irx` reads the 13-week T-bill (^IRX),
+  # quoted in percent and divided by 100. That is the right maturity for option
+  # tenors — ^TNX is the 10-year and is simply the wrong point on the curve.
+  # When the rate is unavailable the scan does not stop: it falls back to
+  # `fallbackRate`, logs a warning, and flags every affected metric row
+  # `rates_fallback` so the UI can say the delta used a fallback rate.
   riskFreeRate:
-    source: tnx
+    source: irx
     fallbackRate: 0.042
+
+  # RiskMetrics EWMA decay for the realized-vol forecast. 0.94 is the daily
+  # standard; lower reacts faster, higher is smoother.
+  ewmaLambda: 0.94
+
+  # Trailing window for the variance-risk-premium z-score.
+  vrpLookbackDays: 252
+
+  # Put-call parity data-quality guard. C - P should equal S*e^(-qT) - K*e^(-rT)
+  # for the same strike and expiry; a large violation means one leg is stale or
+  # crossed. Such rows are EXCLUDED from every metric rather than averaged in.
+  parity:
+    # Absolute floor in dollars, so a (lying) zero-width market cannot pass with
+    # a zero threshold.
+    tolerance: 0.05
+    # A violation is tolerated up to this multiple of the combined half-spread.
+    halfSpreadMult: 2
+    # Data-quality badge thresholds, as a fraction of usable contracts.
+    # >= goodFraction -> good; >= minGoodFraction -> degraded; below -> poor.
+    goodFraction: 0.8
+    minGoodFraction: 0.5
 
 # ── Ratio pairs ───────────────────────────────────────────────────────────────
 # Rolling z-score of the numerator/denominator close ratio. The two legs may
@@ -184,6 +221,19 @@ metrics:
 # two price series positionally).
 pairs:
   lookbackDays: 120
+
+  # Mean-reversion guard (Ornstein-Uhlenbeck half-life, estimated by OLS on
+  # Δs_t = a + λ·s_(t−1) + ε, half_life = −ln(2)/λ).
+  #
+  # A z-score only means "stretched, expect snap-back" if the spread actually
+  # mean-reverts. A structurally broken pair — one leg permanently re-rating —
+  # diverges forever, and a naive z-score scanner would fade that trend
+  # indefinitely, all the way down. Pairs whose λ >= 0 (no reversion) or whose
+  # half-life falls outside this band are marked `mean_reversion: fail` and are
+  # suppressed from ranking, though still shown with the half-life for context.
+  minHalfLife: 1 # below this the "signal" is just noise/microstructure
+  maxHalfLife: 60 # trading days; beyond this it is a trend, not a spread
+
   list:
     - id: gld-gdx
       numerator: GLD
@@ -210,6 +260,27 @@ pairs:
 scanners:
   # How many ranked setups each scanner keeps per scan.
   topN: 20
+
+  # Variance risk premium: ATM_IV_30d − EWMA_realized_vol, in vol points.
+  #
+  # This is NOT redundant with IV rank, and the two routinely disagree. IV rank
+  # says "cheap versus its own history"; VRP says "cheap versus what volatility
+  # is actually doing right now". IV rank can sit in its 10th percentile while
+  # realized vol runs *above* implied — options look cheap historically and are
+  # in fact underpricing reality. Both are displayed.
+  #
+  # VRP is also computable from day one, while IV rank is still a realized-vol
+  # proxy — so during history accumulation it is the more honest of the two.
+  vrp:
+    # false: VRP only weights the ranking, and your IV-rank thresholds remain
+    #        the sole admission test.
+    # true:  VRP additionally EXCLUDES setups on the wrong side of the limits
+    #        below. That is a second opinion bolted onto your thresholds, so it
+    #        is opt-in rather than silently applied.
+    hardGate: false
+    maxVrpForProtection: 2.0 # buying protection: want VRP low (cheap vs reality)
+    minVrpForSelling: 3.0 # selling premium: want VRP high (options rich)
+    rankWeight: 1.0
 
   protectivePut:
     enabled: true
@@ -250,6 +321,13 @@ scanners:
       thinOpenInterest: 2.0 # open interest < `minOpenInterest`
     maxRelativeSpreadPct: 10
     minOpenInterest: 500
+    # Early assignment on the short call is a real risk only when its remaining
+    # extrinsic value is worth less than the dividend the holder captures by
+    # exercising early:  extrinsic = callMid − max(0, S − K);  at risk when
+    # extrinsic < dividend × exDivBuffer. 1.0 is the textbook boundary; raise it
+    # to demand a margin of safety. This drives the `exDivBeforeExpiry` penalty
+    # above rather than a parallel one.
+    exDivBuffer: 1.0
 
   tailHedge:
     enabled: true

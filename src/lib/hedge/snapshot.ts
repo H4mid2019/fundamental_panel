@@ -96,7 +96,7 @@ export async function runChainSnapshot(
       async (ticker) => {
         const result = await provider.getChainSnapshot({
           ticker,
-          targetDte: config.chain.targetDte,
+          tenors: config.chain.tenors,
           minDte: config.chain.minDte,
           now,
         });

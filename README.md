@@ -272,6 +272,71 @@ that. It is still marked experimental, so the server prints one
 wraps it behind a small interface, so switching drivers later is a one-file
 change.
 
+### VRP: the number that says whether hedging is _actually_ cheap
+
+```text
+VRP = ATM_IV_30d − EWMA_realized_vol        (both in vol points)
+```
+
+**VRP is not a second opinion on IV rank, and the two routinely disagree.** IV
+rank asks _"cheap versus its own history?"_. VRP asks _"cheap versus what
+volatility is actually doing?"_. A name can sit in the 10th percentile of its own
+IV range while realized vol runs **above** implied — options that look like a
+bargain historically and are in fact underpricing reality. Both are displayed;
+neither replaces the other.
+
+From a live run: AAPL showed 30-day implied of 27.0% against an EWMA realized of
+33.5% — **VRP −6.50**, protection genuinely cheap relative to what the stock is
+doing. TLT showed **+1.75** (options rich) with an inverted term structure.
+
+VRP also needs **no stored history** — only today's chain and the candle series.
+So while IV rank is still a realized-vol proxy wearing a costume (below), VRP is
+already telling the truth, which makes it the honest signal during the
+history-accumulation period.
+
+Whether VRP acts as a **hard gate** or only as a ranking input is yours to set
+(`scanners.vrp.hardGate`, default `false`). Left off, your IV-rank thresholds
+remain the sole admission test and VRP merely weights the ranking — a second
+opinion is not silently bolted onto your thresholds.
+
+### The data-quality badge
+
+Put-call parity (`C − P = S·e^(−qT) − K·e^(−rT)`) is enforced by arbitrage, not by
+a model — so a _live_ market satisfies it to within the bid/ask spread. A pair
+that violates it by far more than the spread can explain is not saying something
+interesting about volatility: **one of its legs is stale.** Yahoo's chains are full
+of these, and an implied vol solved from a stale price is not
+noisy-but-unbiased — it is simply wrong, and averaging more of them does not help.
+
+Violating rows are excluded from every metric, and each ticker carries a badge:
+
+| Badge      | Meaning                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `good`     | ≥80% of candidate contracts are defect-free                |
+| `degraded` | 50–80% — still ranked, but read it with suspicion          |
+| `poor`     | <50% — the chain is mostly stale; do not trust its numbers |
+
+A deep out-of-the-money wing quoted 0.00 / 0.02 is _uninformative_ but not **bad
+data**; it is counted separately, so a ticker is never badged `poor` merely for
+having tails.
+
+### Pair z-scores only fire if the pair mean-reverts
+
+A z-score says "stretched". It does **not** say "expect a snap-back" unless the
+spread actually pulls toward a mean. A structurally broken pair — one leg
+permanently re-rating — diverges forever, its z-score pins at an extreme, and a
+scanner that fades it keeps fading it all the way down.
+
+Every pair is therefore fitted for an Ornstein-Uhlenbeck half-life
+(`Δs = a + λ·s₋₁ + ε`, `half-life = −ln2/λ`). Pairs with `λ ≥ 0`, or a half-life
+outside `pairs.minHalfLife … pairs.maxHalfLife` (default 1–60 trading days), are
+marked `mean_reversion: fail` and are **shown with their half-life but never
+ranked**.
+
+This bites immediately: on a live run GLD/GDX printed a z-score of **1.41** — a
+perfectly tradeable-looking signal — on a spread whose half-life is **124 days**.
+Faded, it would have taken four months to work, if ever.
+
 ### IV rank is _proxied_ until the history fills
 
 On day one there is no IV history, so IV rank is computed from **realized

@@ -9,13 +9,18 @@
  */
 
 import type { AppError, Result } from "../../types";
+import type { TenorTargets } from "../expiry";
 import type { ChainSnapshot } from "../types";
 
 /** What a provider needs in order to capture one underlying. */
 export interface ChainRequest {
   ticker: string;
-  /** Target tenors in days; the provider snaps each to a real expiration. */
-  targetDte: readonly number[];
+  /**
+   * Target tenors, split into wing (`skew`) and at-the-money (`term`) families;
+   * the provider snaps each to a real expiration. Skew tenors resolve only to
+   * standard monthlies — see {@link TenorTargets}.
+   */
+  tenors: TenorTargets;
   /** Never select an expiration closer than this. */
   minDte: number;
   /** Capture instant, injected so snapshots and tests are deterministic. */

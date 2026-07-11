@@ -43,7 +43,24 @@ export function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** An expiration chosen for one of the configured target tenors. */
+/** The two families of tenor, which have genuinely different requirements. */
+export interface TenorTargets {
+  /**
+   * Tenors used for wing metrics (25-delta skew, call/put spread). These MUST
+   * resolve to standard monthlies — see the module comment.
+   */
+  skew: readonly number[];
+  /**
+   * Tenors used only for at-the-money metrics (constant-maturity ATM IV, term
+   * slope, VRP). Any expiration will do: ATM strikes are listed on every expiry,
+   * so a weekly's shallow ladder is harmless here. This is what brackets the
+   * 30-day point from below, without which a constant-maturity 30d ATM IV could
+   * only be extrapolated.
+   */
+  term: readonly number[];
+}
+
+/** An expiration chosen for one or more of the configured target tenors. */
 export interface SelectedExpiry {
   /** `YYYY-MM-DD`. */
   expiration: string;
@@ -51,31 +68,50 @@ export interface SelectedExpiry {
   date: Date;
   dte: number;
   standardMonthly: boolean;
-  /** Which entry of `chain.targetDte` selected this expiration. */
-  targetDte: number;
+  /** Every target DTE that resolved to this expiration, ascending. */
+  targetDtes: number[];
+  /**
+   * Safe for 25-delta / wing metrics. True only for standard monthlies: a
+   * weekly's strike ladder cannot reach a 25-delta strike, and a search on one
+   * silently clamps to the ladder edge rather than failing.
+   */
+  usableForSkew: boolean;
+}
+
+/** Nearest entry of `pool` to `target` by DTE, or `undefined` if empty. */
+function nearest<T extends { dte: number }>(
+  pool: readonly T[],
+  target: number,
+): T | undefined {
+  let best = pool[0];
+  if (!best) return undefined;
+  for (const c of pool) {
+    if (Math.abs(c.dte - target) < Math.abs(best.dte - target)) best = c;
+  }
+  return best;
 }
 
 /**
- * Choose one expiration per target tenor.
+ * Choose the expirations to capture.
  *
- * For each target DTE, prefers the standard monthly whose DTE is closest to the
- * target (subject to `minDte`); if the ticker lists no monthly at or beyond
- * `minDte`, falls back to the closest non-monthly so a thin-chain ticker still
- * produces *something*, flagged `standardMonthly: false`.
+ * `skew` targets resolve against standard monthlies only (falling back to any
+ * expiration, flagged `usableForSkew: false`, when a ticker lists no monthly at
+ * all). `term` targets resolve against every listed expiration, weeklies
+ * included.
  *
- * Two targets that resolve to the same expiration are deduped — SPY's 30d and
- * 90d targets can land on the same monthly for a thinly-listed name, and we
- * should not pay for the same HTTP call twice.
+ * The two sets are then merged and deduped by expiration date, so an expiry that
+ * serves both purposes is fetched once, not twice — each Yahoo call is an
+ * expiration, and the per-ticker call budget is the size of this result.
  *
  * @param available - Every expiration the provider listed.
- * @param targetDtes - Desired tenors, in days (e.g. `[30, 90, 180]`).
+ * @param targets - The skew and term tenor lists.
  * @param minDte - Never select an expiration closer than this.
  * @param now - The capture instant, injected for deterministic tests.
  * @returns The chosen expirations, ascending by DTE. Empty when nothing is in range.
  */
 export function selectExpiries(
   available: readonly Date[],
-  targetDtes: readonly number[],
+  targets: TenorTargets,
   minDte: number,
   now: Date,
 ): SelectedExpiry[] {
@@ -93,32 +129,46 @@ export function selectExpiries(
   const monthlies = candidates.filter((c) => c.monthly);
   const chosen = new Map<string, SelectedExpiry>();
 
-  for (const target of targetDtes) {
-    // Prefer monthlies; only consider weeklies if the ticker lists no monthly.
-    const pool = monthlies.length > 0 ? monthlies : candidates;
-    let best = pool[0];
-    if (!best) continue;
-    for (const c of pool) {
-      if (Math.abs(c.dte - target) < Math.abs(best.dte - target)) best = c;
-    }
-
-    const expiration = toIsoDate(best.date);
+  const add = (
+    pick: (typeof candidates)[number],
+    target: number,
+    forSkew: boolean,
+  ): void => {
+    const expiration = toIsoDate(pick.date);
     const existing = chosen.get(expiration);
-    // If two targets collide on one expiration, keep it under the target it
-    // matches most closely, so `targetDte` stays meaningful downstream.
-    if (
-      existing &&
-      Math.abs(best.dte - existing.targetDte) <= Math.abs(best.dte - target)
-    ) {
-      continue;
+    if (existing) {
+      if (!existing.targetDtes.includes(target)) {
+        existing.targetDtes.push(target);
+        existing.targetDtes.sort((a, b) => a - b);
+      }
+      // An expiry picked for a term target AND a skew target is usable for skew
+      // only if it is genuinely a monthly.
+      existing.usableForSkew ||= forSkew && pick.monthly;
+      return;
     }
     chosen.set(expiration, {
       expiration,
-      date: best.date,
-      dte: best.dte,
-      standardMonthly: best.monthly,
-      targetDte: target,
+      date: pick.date,
+      dte: pick.dte,
+      standardMonthly: pick.monthly,
+      targetDtes: [target],
+      usableForSkew: forSkew && pick.monthly,
     });
+  };
+
+  // Skew tenors: monthlies only. A ticker with no monthly in range still gets
+  // *something* (better a flagged reading than none), but it is marked unusable
+  // for wing metrics so no 25-delta number is ever taken off a thin ladder.
+  const skewPool = monthlies.length > 0 ? monthlies : candidates;
+  for (const target of targets.skew) {
+    const pick = nearest(skewPool, target);
+    if (pick) add(pick, target, true);
+  }
+
+  // Term tenors: any expiration, because only ATM IV is read from them.
+  for (const target of targets.term) {
+    const pick = nearest(candidates, target);
+    if (pick) add(pick, target, false);
   }
 
   return [...chosen.values()].sort((a, b) => a.dte - b.dte);

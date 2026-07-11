@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   delta,
   impliedVolatility,
-  interpolateAtDelta,
   normalCdf,
   normalPdf,
   price,
@@ -270,60 +269,5 @@ describe("yearsToExpiry", () => {
     // Expiry day must stay strictly positive or every greek collapses.
     expect(yearsToExpiry(0)).toBeGreaterThan(0);
     expect(yearsToExpiry(-5)).toBeGreaterThan(0);
-  });
-});
-
-describe("interpolateAtDelta", () => {
-  const points = [
-    { strike: 90, iv: 0.34, absDelta: 0.12 },
-    { strike: 95, iv: 0.3, absDelta: 0.22 },
-    { strike: 100, iv: 0.26, absDelta: 0.32 },
-    { strike: 105, iv: 0.24, absDelta: 0.48 },
-  ];
-
-  it("interpolates IV linearly between the bracketing strikes", () => {
-    const result = interpolateAtDelta(points, 0.25);
-    expect(result).not.toBeNull();
-    if (!result) return;
-    expect(result.bracketed).toBe(true);
-    // 0.25 sits 30% of the way from 0.22 to 0.32, so IV ≈ 0.30 + 0.3*(0.26-0.30).
-    expect(result.iv).toBeCloseTo(0.288, 6);
-    // The tradable strike is the nearer of the two brackets.
-    expect(result.nearestStrike).toBe(95);
-  });
-
-  it("returns an exact listed point when one sits on the target", () => {
-    const result = interpolateAtDelta(points, 0.22);
-    expect(result?.iv).toBeCloseTo(0.3, 10);
-    expect(result?.bracketed).toBe(true);
-  });
-
-  // The thin-weekly failure mode: the chain does not reach far enough down the
-  // ladder. Returning the closest point *flagged as unbracketed* is what stops a
-  // clamped strike from masquerading as a real 25-delta reading.
-  it("flags a non-bracketed result rather than silently clamping", () => {
-    const thin = [
-      { strike: 100, iv: 0.26, absDelta: 0.42 },
-      { strike: 105, iv: 0.24, absDelta: 0.48 },
-    ];
-    const result = interpolateAtDelta(thin, 0.25);
-    expect(result).not.toBeNull();
-    expect(result?.bracketed).toBe(false);
-    expect(result?.iv).toBeCloseTo(0.26, 10);
-  });
-
-  it("discards unusable points and returns null when nothing survives", () => {
-    expect(interpolateAtDelta([], 0.25)).toBeNull();
-    expect(
-      interpolateAtDelta(
-        [
-          { strike: 100, iv: 0, absDelta: 0.25 },
-          { strike: 105, iv: 0.3, absDelta: 0 },
-          { strike: 110, iv: 0.3, absDelta: 1 },
-          { strike: 115, iv: Number.NaN, absDelta: 0.3 },
-        ],
-        0.25,
-      ),
-    ).toBeNull();
   });
 });

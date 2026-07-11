@@ -18,7 +18,12 @@
  * because a flat-vol fixture would let a broken skew calculation pass its tests.
  */
 
-import { isStandardMonthly, toIsoDate } from "./expiry";
+import {
+  isStandardMonthly,
+  selectExpiries,
+  toIsoDate,
+  type TenorTargets,
+} from "./expiry";
 import { price, delta, yearsToExpiry } from "./math/blackScholes";
 import type {
   ChainSnapshot,
@@ -122,6 +127,25 @@ export function standardMonthlies(now: Date, months: number): Date[] {
   return out;
 }
 
+/**
+ * The next `count` Fridays after `now` — the weekly expiration ladder.
+ *
+ * @param now - Capture instant.
+ * @param count - How many Fridays to emit.
+ * @returns Friday dates at UTC midnight, ascending.
+ */
+export function fridays(now: Date, count: number): Date[] {
+  const out: Date[] = [];
+  const cursor = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  while (out.length < count) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    if (cursor.getUTCDay() === 5) out.push(new Date(cursor));
+  }
+  return out;
+}
+
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** Build one contract, priced through Black-Scholes from the surface. */
@@ -134,10 +158,11 @@ function buildContract(
   dte: number,
   surface: FixtureSurface,
   rate: number,
+  divYield: number,
 ): HedgeContract {
   const t = yearsToExpiry(dte);
   const sigma = surfaceIv(surface, spot, strike, t);
-  const inputs = { s: spot, k: strike, t, r: rate, q: 0, sigma };
+  const inputs = { s: spot, k: strike, t, r: rate, q: divYield, sigma };
   const mid = price(inputs, right);
   const d = Math.abs(delta(inputs, right));
 
@@ -179,61 +204,92 @@ function buildContract(
  *
  * @param ticker - The underlying.
  * @param now - Capture instant.
- * @param targetDtes - Tenors to build, mirroring `chain.targetDte`.
+ * @param tenors - Skew and term tenors, mirroring `chain.tenors`.
  * @param rate - Risk-free rate used for pricing.
  * @returns A snapshot with the same shape a live provider returns.
  */
 export function fixtureChainSnapshot(
   ticker: string,
   now: Date,
-  targetDtes: readonly number[] = [30, 90, 180],
+  tenors: TenorTargets = { skew: [30, 60, 90, 180], term: [14] },
   rate = 0.042,
+  divYield = 0,
 ): ChainSnapshot {
   const spot = fixtureSpot(ticker);
   const surface = fixtureSurface(ticker);
   const step = strikeStep(spot);
+
+  // A realistic listing: monthlies plus a weekly ladder. The weeklies are what
+  // let a fixture bracket the 30-day point from below, exactly as a real chain
+  // does — without them no test could exercise the constant-maturity ATM IV path
+  // that VRP depends on.
   const monthlies = standardMonthlies(now, 13);
+  const weeklies = fridays(now, 8);
+  const available = [...new Set([...weeklies, ...monthlies].map(toIsoDate))]
+    .sort()
+    .map((iso) => new Date(`${iso}T00:00:00.000Z`));
 
-  // A wide ladder (±40%) is what makes a 25-delta strike reachable at all — the
-  // thin ±10% ladder a weekly lists is precisely the trap this avoids.
-  const strikes: number[] = [];
-  const lo = Math.ceil((spot * 0.6) / step) * step;
-  const hi = Math.floor((spot * 1.4) / step) * step;
-  for (let k = lo; k <= hi; k += step) strikes.push(round2(k));
+  // Selection runs through the *same* code path the live provider uses, so a
+  // fixture cannot drift from production behaviour.
+  const selected = selectExpiries(available, tenors, 10, now);
 
-  const expiries: HedgeExpiry[] = [];
-  for (const target of targetDtes) {
-    let best = monthlies[0];
-    if (!best) continue;
-    for (const d of monthlies) {
-      const dte = Math.round((d.getTime() - now.getTime()) / 86_400_000);
-      const bestDte = Math.round((best.getTime() - now.getTime()) / 86_400_000);
-      if (Math.abs(dte - target) < Math.abs(bestDte - target)) best = d;
-    }
-    const expiration = toIsoDate(best);
-    if (expiries.some((e) => e.expiration === expiration)) continue;
+  // Strike ladders differ by expiry type, which is the entire point: a monthly
+  // lists a wide (±40%) ladder that reaches a 25-delta strike, while a weekly
+  // lists a thin (±10%) one that does not. A fixture with uniform ladders would
+  // let a 25-delta search on a weekly pass its tests.
+  const ladder = (widthPct: number): number[] => {
+    const out: number[] = [];
+    const lo = Math.ceil((spot * (1 - widthPct)) / step) * step;
+    const hi = Math.floor((spot * (1 + widthPct)) / step) * step;
+    for (let k = lo; k <= hi; k += step) out.push(round2(k));
+    return out;
+  };
+  const wide = ladder(0.4);
+  const thin = ladder(0.1);
 
-    const dte = Math.round((best.getTime() - now.getTime()) / 86_400_000);
-    expiries.push({
-      expiration,
-      dte,
-      standardMonthly: true,
-      targetDte: target,
+  const expiries: HedgeExpiry[] = selected.map((sel) => {
+    const strikes = sel.standardMonthly ? wide : thin;
+    return {
+      expiration: sel.expiration,
+      dte: sel.dte,
+      standardMonthly: sel.standardMonthly,
+      targetDtes: sel.targetDtes,
+      usableForSkew: sel.usableForSkew,
       calls: strikes.map((k) =>
-        buildContract(ticker, "call", spot, k, expiration, dte, surface, rate),
+        buildContract(
+          ticker,
+          "call",
+          spot,
+          k,
+          sel.expiration,
+          sel.dte,
+          surface,
+          rate,
+          divYield,
+        ),
       ),
       puts: strikes.map((k) =>
-        buildContract(ticker, "put", spot, k, expiration, dte, surface, rate),
+        buildContract(
+          ticker,
+          "put",
+          spot,
+          k,
+          sel.expiration,
+          sel.dte,
+          surface,
+          rate,
+          divYield,
+        ),
       ),
-    });
-  }
+    };
+  });
 
   return {
     ticker: ticker.toUpperCase(),
     capturedAt: new Date(now).toISOString(),
     spot,
-    availableExpirations: monthlies.map(toIsoDate),
-    expiries: expiries.sort((a, b) => a.dte - b.dte),
+    availableExpirations: available.map(toIsoDate),
+    expiries,
     events: { earningsDate: null, exDividendDate: null },
     source: "fixture",
     fallback: true,

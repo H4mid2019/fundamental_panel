@@ -41,8 +41,13 @@ export interface HedgeExpiry {
   dte: number;
   /** True when this is a standard monthly (3rd Friday) expiration. */
   standardMonthly: boolean;
-  /** The target DTE from `chain.targetDte` that selected this expiration. */
-  targetDte: number;
+  /** Every configured target DTE that resolved to this expiration. */
+  targetDtes: number[];
+  /**
+   * Safe to read 25-delta / wing metrics from. False for weeklies, whose strike
+   * ladder is too shallow to reach a 25-delta strike — ATM IV is still fine.
+   */
+  usableForSkew: boolean;
   calls: HedgeContract[];
   puts: HedgeContract[];
 }

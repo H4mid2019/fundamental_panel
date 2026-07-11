@@ -37,10 +37,15 @@ export interface HistoryRow {
   /** `YYYY-MM-DD`. */
   asOf: string;
   close: number | null;
+  /** Constant-maturity 30-day ATM IV, in vol points. */
   atmIv: number | null;
   /** True when `atmIv` is a realized-vol stand-in rather than a real ATM IV. */
   atmIvProxied: boolean;
   realizedVol20d: number | null;
+  /** EWMA (RiskMetrics) realized-vol forecast, in vol points. */
+  ewmaVol: number | null;
+  /** Variance risk premium, in vol points. */
+  vrp: number | null;
   putSkew25d: number | null;
   callPutSpread: number | null;
   termSlope: number | null;
@@ -240,15 +245,19 @@ export function upsertHistory(
       db.run(
         `INSERT INTO history
            (ticker, as_of, close, atm_iv, atm_iv_proxied, realized_vol_20d,
-            put_skew_25d, call_put_spread, term_slope, source, created_at)
+            ewma_vol, vrp, put_skew_25d, call_put_spread, term_slope,
+            source, created_at)
          VALUES
            (:ticker, :asOf, :close, :atmIv, :proxied, :rv,
-            :putSkew, :callPutSpread, :termSlope, :source, :createdAt)
+            :ewmaVol, :vrp, :putSkew, :callPutSpread, :termSlope,
+            :source, :createdAt)
          ON CONFLICT (ticker, as_of) DO UPDATE SET
            close            = COALESCE(excluded.close,            history.close),
            atm_iv           = COALESCE(excluded.atm_iv,           history.atm_iv),
            atm_iv_proxied   = excluded.atm_iv_proxied,
            realized_vol_20d = COALESCE(excluded.realized_vol_20d, history.realized_vol_20d),
+           ewma_vol         = COALESCE(excluded.ewma_vol,         history.ewma_vol),
+           vrp              = COALESCE(excluded.vrp,              history.vrp),
            put_skew_25d     = COALESCE(excluded.put_skew_25d,     history.put_skew_25d),
            call_put_spread  = COALESCE(excluded.call_put_spread,  history.call_put_spread),
            term_slope       = COALESCE(excluded.term_slope,       history.term_slope),
@@ -261,6 +270,8 @@ export function upsertHistory(
           atmIv: r.atmIv,
           proxied: r.atmIvProxied ? 1 : 0,
           rv: r.realizedVol20d,
+          ewmaVol: r.ewmaVol,
+          vrp: r.vrp,
           putSkew: r.putSkew25d,
           callPutSpread: r.callPutSpread,
           termSlope: r.termSlope,
@@ -281,6 +292,8 @@ function mapHistory(r: Record<string, unknown>): HistoryRow {
     atmIv: num(r.atm_iv),
     atmIvProxied: toBool(r.atm_iv_proxied),
     realizedVol20d: num(r.realized_vol_20d),
+    ewmaVol: num(r.ewma_vol),
+    vrp: num(r.vrp),
     putSkew25d: num(r.put_skew_25d),
     callPutSpread: num(r.call_put_spread),
     termSlope: num(r.term_slope),

@@ -61,24 +61,62 @@ describe("fixtureChainSnapshot", () => {
     );
   });
 
-  it("builds one expiry per requested tenor, all standard monthlies", () => {
-    const snap = fixtureChainSnapshot("SPY", now, [30, 90, 180]);
-    expect(snap.expiries).toHaveLength(3);
-    expect(snap.expiries.every((e) => e.standardMonthly)).toBe(true);
+  it("resolves skew tenors to monthlies and term tenors to any expiry", () => {
+    const snap = fixtureChainSnapshot("SPY", now, {
+      skew: [30, 90, 180],
+      term: [14],
+    });
     expect(snap.spot).toBeGreaterThan(0);
     expect(snap.fallback).toBe(true);
     expect(snap.source).toBe("fixture");
+
+    // Three monthlies for the wings, plus a sub-30-day weekly for the ATM point.
+    const monthlies = snap.expiries.filter((e) => e.standardMonthly);
+    const weeklies = snap.expiries.filter((e) => !e.standardMonthly);
+    expect(monthlies).toHaveLength(3);
+    expect(weeklies.length).toBeGreaterThanOrEqual(1);
+    expect(monthlies.every((e) => e.usableForSkew)).toBe(true);
+    expect(weeklies.every((e) => !e.usableForSkew)).toBe(true);
+
     // Ascending DTE, as the term-structure metric requires.
     const dtes = snap.expiries.map((e) => e.dte);
     expect([...dtes].sort((a, b) => a - b)).toEqual(dtes);
+
+    // And the 30-day point is bracketed on both sides — without this, the
+    // constant-maturity ATM IV that VRP is defined on could only be extrapolated.
+    expect(dtes.some((d) => d < 30)).toBe(true);
+    expect(dtes.some((d) => d > 30)).toBe(true);
+  });
+
+  // The fixture deliberately gives weeklies a thin ladder and monthlies a wide
+  // one, mirroring reality. A fixture with uniform ladders would let a
+  // 25-delta search on a weekly pass its tests when in production it clamps.
+  it("gives weeklies a ladder too thin to reach 25 delta, and monthlies one that is not", () => {
+    const snap = fixtureChainSnapshot("SPY", now);
+    const spot = snap.spot ?? 0;
+    expect(spot).toBeGreaterThan(0);
+
+    const monthly = snap.expiries.find((e) => e.standardMonthly);
+    const weekly = snap.expiries.find((e) => !e.standardMonthly);
+    expect(monthly).toBeDefined();
+    expect(weekly).toBeDefined();
+    if (!monthly || !weekly) return;
+
+    const span = (e: typeof monthly) => {
+      const ks = e.puts.map((p) => p.strike);
+      return { lo: Math.min(...ks) / spot, hi: Math.max(...ks) / spot };
+    };
+    expect(span(monthly).lo).toBeLessThan(0.75);
+    expect(span(monthly).hi).toBeGreaterThan(1.25);
+    // The weekly cannot reach far enough down the ladder for a 25-delta put.
+    expect(span(weekly).lo).toBeGreaterThan(0.85);
   });
 
   it("lists a strike ladder wide enough to reach a 25-delta strike", () => {
-    // The whole point of the fixture: a thin ±10% ladder (what a real weekly
-    // lists) cannot bracket a 25-delta put, and every skew metric would break.
     const snap = fixtureChainSnapshot("SPY", now);
     const spot = snap.spot ?? 0;
-    const front = snap.expiries[0];
+    // Wing metrics only ever read a monthly, so that is what must bracket 25Δ.
+    const front = snap.expiries.find((e) => e.usableForSkew);
     expect(front).toBeDefined();
     if (!front || spot === 0) return;
 

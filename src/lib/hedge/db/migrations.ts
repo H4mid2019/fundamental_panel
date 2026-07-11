@@ -176,6 +176,58 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: "quant_upgrade",
+    sql: `
+      -- The rate and dividend yield actually used to compute delta. Stored, not
+      -- just applied: a 25-delta strike is only reproducible if you know what r
+      -- and q produced it, and on the high-yield names (TLT, HYG, LQD, XLU) q
+      -- moves delta by whole percent. rates_fallback records that one of them
+      -- was unavailable and a fallback was substituted, so the UI can say the
+      -- delta is approximate rather than presenting it as exact.
+      ALTER TABLE metrics ADD COLUMN risk_free_rate REAL;
+      ALTER TABLE metrics ADD COLUMN dividend_yield REAL;
+      ALTER TABLE metrics ADD COLUMN rates_fallback INTEGER NOT NULL DEFAULT 0;
+
+      -- Constant-maturity ATM IV, interpolated in TOTAL VARIANCE across the
+      -- bracketing expiries (w = sigma^2 * T, linear in T). Interpolating IV
+      -- linearly against calendar days is mildly arbitrageable and biases the
+      -- term slope. The *_bracketed flags record whether the chain actually
+      -- straddled the target; an unbracketed value is never extrapolated, it is
+      -- left null.
+      ALTER TABLE metrics ADD COLUMN atm_iv_30d REAL;
+      ALTER TABLE metrics ADD COLUMN atm_iv_90d REAL;
+      ALTER TABLE metrics ADD COLUMN atm_30d_bracketed INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE metrics ADD COLUMN skew_25d_bracketed INTEGER NOT NULL DEFAULT 0;
+
+      -- EWMA (RiskMetrics) realized-vol forecast, and the variance risk premium
+      -- it feeds: VRP = ATM_IV_30d - EWMA_RV, in vol points.
+      ALTER TABLE metrics ADD COLUMN ewma_vol REAL;
+      ALTER TABLE metrics ADD COLUMN vrp REAL;
+      ALTER TABLE metrics ADD COLUMN vrp_z REAL;
+
+      -- Put-call-parity data quality. A ticker whose chain is mostly stale must
+      -- not be silently ranked alongside one whose chain is clean.
+      ALTER TABLE metrics ADD COLUMN contracts_total INTEGER;
+      ALTER TABLE metrics ADD COLUMN contracts_excluded INTEGER;
+      ALTER TABLE metrics ADD COLUMN parity_violations INTEGER;
+      ALTER TABLE metrics ADD COLUMN data_quality TEXT;  -- 'good'|'degraded'|'poor'
+
+      -- The append-only series the ranks and z-scores read from. Note that
+      -- history.atm_iv is now specifically the constant-maturity 30d ATM IV, so
+      -- IV rank ranks a fixed tenor instead of a drifting one.
+      ALTER TABLE history ADD COLUMN ewma_vol REAL;
+      ALTER TABLE history ADD COLUMN vrp REAL;
+
+      -- Ornstein-Uhlenbeck mean-reversion guard for pair z-scores. Without it a
+      -- z-score scanner fades a structurally broken pair forever.
+      ALTER TABLE pair_metrics ADD COLUMN ou_lambda REAL;
+      ALTER TABLE pair_metrics ADD COLUMN half_life REAL;
+      ALTER TABLE pair_metrics ADD COLUMN mean_reversion TEXT; -- 'pass'|'fail'|'unknown'
+      ALTER TABLE pair_metrics ADD COLUMN cointegration TEXT;  -- 'pass'|'fail'|'unknown'
+    `,
+  },
 ];
 
 /** The schema version this build expects. */

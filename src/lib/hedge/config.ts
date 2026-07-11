@@ -52,7 +52,22 @@ const HedgeConfigSchema = z.object({
   }),
 
   chain: z.object({
-    targetDte: z.array(z.number().int().positive()).min(1),
+    /**
+     * Two tenor lists, because the wings and the at-the-money point have
+     * different requirements.
+     *
+     * `skew` tenors must resolve to standard monthlies: a 25-delta strike needs
+     * a deep strike ladder, and a weekly's is far too shallow to reach one.
+     * `term` tenors may resolve to any expiration, weeklies included — ATM
+     * strikes are listed on *every* expiry, so ATM IV is safe there. Without a
+     * sub-30-day expiry nothing brackets the 30-day point, and a
+     * constant-maturity 30d ATM IV (which VRP is defined against) could only be
+     * extrapolated.
+     */
+    tenors: z.object({
+      skew: z.array(z.number().int().positive()).min(1),
+      term: z.array(z.number().int().positive()),
+    }),
     minDte: z.number().int().positive(),
     concurrency: z.number().int().min(1).max(16),
     jitterMs: range("chain.jitterMs"),
@@ -73,19 +88,74 @@ const HedgeConfigSchema = z.object({
     correlationWindowDays: z.number().int().min(2),
     correlationRegimeLookbackDays: z.number().int().min(2),
     realizedVolWindowDays: z.number().int().min(2),
+
+    /**
+     * Risk-free rate for Black-Scholes. `irx` reads the 13-week T-bill (^IRX),
+     * which is the right maturity for option tenors — ^TNX (10y) is not.
+     */
     riskFreeRate: z.object({
-      source: z.enum(["tnx", "fixed"]),
+      source: z.enum(["irx", "tnx", "fixed"]),
       fallbackRate: z.number().min(0).max(1),
+    }),
+
+    /** RiskMetrics EWMA decay. 0.94 is the daily-data standard. */
+    ewmaLambda: z.number().gt(0).lt(1),
+
+    /** Trailing window for the VRP z-score. */
+    vrpLookbackDays: z.number().int().min(2),
+
+    /**
+     * Put-call parity quote-quality guard. A quote is rejected when the parity
+     * violation exceeds `max(halfSpreadMult × combined half-spread, tolerance)`.
+     * `tolerance` is an absolute floor in dollars, so a zero-width quoted market
+     * (which does happen, and is a lie) cannot pass with a zero threshold.
+     */
+    parity: z.object({
+      tolerance: z.number().positive(),
+      halfSpreadMult: z.number().positive(),
+      /** Below this fraction of usable contracts a ticker is badged `poor`. */
+      minGoodFraction: z.number().min(0).max(1),
+      /** Above this fraction it is badged `good`; between the two, `degraded`. */
+      goodFraction: z.number().min(0).max(1),
     }),
   }),
 
   pairs: z.object({
     lookbackDays: z.number().int().min(2),
+    /**
+     * Ornstein-Uhlenbeck mean-reversion guard. A pair z-score is only tradeable
+     * if the spread actually mean-reverts; a structurally broken pair diverges
+     * forever and a z-score scanner would fade it indefinitely. Half-lives
+     * outside this band (or a non-reverting lambda >= 0) mark the pair `fail`.
+     */
+    minHalfLife: z.number().positive(),
+    maxHalfLife: z.number().positive(),
     list: z.array(PairSchema),
   }),
 
   scanners: z.object({
     topN: z.number().int().min(1).max(100),
+
+    /**
+     * How the variance risk premium enters the protective-put and collar
+     * rankings.
+     *
+     * `hardGate: false` (default) uses VRP only as a ranking input, leaving the
+     * configured IV-rank thresholds as the sole admission test. Setting it true
+     * additionally *excludes* setups on the wrong side of `maxVrpForProtection`
+     * — a second opinion bolted onto the thresholds, which is a real change in
+     * behaviour and therefore opt-in rather than silent.
+     */
+    vrp: z.object({
+      hardGate: z.boolean(),
+      /** Protection is "cheap vs reality" below this VRP, in vol points. */
+      maxVrpForProtection: z.number(),
+      /** Premium selling is attractive above this VRP, in vol points. */
+      minVrpForSelling: z.number(),
+      /** Weight of the VRP z-score in the composite ranking score. */
+      rankWeight: z.number().min(0),
+    }),
+
     protectivePut: z.object({
       enabled: z.boolean(),
       maxIvRank: z.number().min(0).max(100),
@@ -121,6 +191,17 @@ const HedgeConfigSchema = z.object({
       }),
       maxRelativeSpreadPct: z.number().positive(),
       minOpenInterest: z.number().int().min(0),
+      /**
+       * Early-assignment risk on the short call. A short call is genuinely at
+       * risk when its remaining extrinsic value is worth less than the dividend
+       * the holder would capture by exercising early:
+       *
+       *   extrinsic = callMid - max(0, S - K)
+       *   at risk when  extrinsic < dividend x exDivBuffer
+       *
+       * 1.0 is the textbook boundary; raise it to demand a safety margin.
+       */
+      exDivBuffer: z.number().min(0),
     }),
     tailHedge: z.object({
       enabled: z.boolean(),
@@ -182,9 +263,41 @@ export function parseHedgeConfig(source: string, origin: string): HedgeConfig {
   }
 
   const config = parsed.data;
+  const problems: string[] = [];
+
   if (config.chain.quality.minIv >= config.chain.quality.maxIv) {
+    problems.push("chain.quality: minIv must be < maxIv");
+  }
+  if (config.pairs.minHalfLife >= config.pairs.maxHalfLife) {
+    problems.push("pairs: minHalfLife must be < maxHalfLife");
+  }
+  if (
+    config.metrics.parity.minGoodFraction > config.metrics.parity.goodFraction
+  ) {
+    problems.push("metrics.parity: minGoodFraction must be <= goodFraction");
+  }
+
+  // The 30-day point is bracketed only if some tenor resolves below 30 DTE.
+  // Without that, a constant-maturity 30d ATM IV — which VRP is defined on —
+  // could only be extrapolated, so VRP would be null for every ticker. Catch
+  // that here rather than shipping a config that silently disables the metric.
+  const tenors = [...config.chain.tenors.skew, ...config.chain.tenors.term];
+  if (!tenors.some((t) => t < 30)) {
+    problems.push(
+      "chain.tenors: needs a tenor below 30 DTE to bracket the 30-day point " +
+        "(VRP and the term slope read a constant-maturity 30d ATM IV, and " +
+        "extrapolating it is not allowed)",
+    );
+  }
+  if (config.chain.minDte >= 30) {
+    problems.push(
+      "chain.minDte: must be < 30, or no expiry can bracket the 30-day point",
+    );
+  }
+
+  if (problems.length > 0) {
     throw new Error(
-      `Invalid ${origin}:\n  - chain.quality: minIv must be < maxIv`,
+      `Invalid ${origin}:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
     );
   }
   return config;

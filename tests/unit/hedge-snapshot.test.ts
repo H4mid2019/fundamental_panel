@@ -258,8 +258,8 @@ describe("provider stubs", () => {
   it("report a provider error rather than throwing", async () => {
     const request: ChainRequest = {
       ticker: "SPY",
-      targetDte: [30],
-      minDte: 21,
+      tenors: { skew: [30], term: [14] },
+      minDte: 10,
       now,
     };
 

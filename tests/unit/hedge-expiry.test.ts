@@ -65,19 +65,27 @@ describe("selectExpiries", () => {
     utc("2027-01-15"), // monthly
   ];
 
-  it("prefers standard monthlies over nearer weeklies", () => {
-    const selected = selectExpiries(available, [30], 21, now);
+  const skewOnly = (skew: number[]) => ({ skew, term: [] });
+
+  it("resolves a skew tenor to a monthly, never a nearer weekly", () => {
+    const selected = selectExpiries(available, skewOnly([30]), 21, now);
     expect(selected).toHaveLength(1);
     // 2026-08-14 (34 DTE) is closer to the 30d target than 2026-08-21 (41 DTE),
     // but it is a weekly with a shallow strike ladder, so the monthly wins.
     expect(selected[0]?.expiration).toBe("2026-08-21");
     expect(selected[0]?.standardMonthly).toBe(true);
     expect(selected[0]?.dte).toBe(41);
-    expect(selected[0]?.targetDte).toBe(30);
+    expect(selected[0]?.targetDtes).toEqual([30]);
+    expect(selected[0]?.usableForSkew).toBe(true);
   });
 
-  it("selects one expiration per target tenor", () => {
-    const selected = selectExpiries(available, [30, 90, 180], 21, now);
+  it("selects one expiration per skew tenor", () => {
+    const selected = selectExpiries(
+      available,
+      skewOnly([30, 90, 180]),
+      21,
+      now,
+    );
     expect(selected.map((e) => e.expiration)).toEqual([
       "2026-08-21", // ~30d
       "2026-10-16", // ~90d (97 DTE)
@@ -88,22 +96,59 @@ describe("selectExpiries", () => {
     expect(selected.map((e) => e.dte)).toEqual([41, 97, 188]);
   });
 
+  // The reason the two lists exist at all: ATM strikes are listed on every
+  // expiry, so a term tenor may take a weekly — and only a weekly can bracket
+  // the 30-day point from below, which VRP's constant-maturity ATM IV needs.
+  it("resolves a term tenor to any expiration, weeklies included", () => {
+    const selected = selectExpiries(
+      available,
+      { skew: [30], term: [14] },
+      10,
+      now,
+    );
+    const weekly = selected.find((e) => !e.standardMonthly);
+    expect(weekly).toBeDefined();
+    expect(weekly?.expiration).toBe("2026-07-24"); // 13 DTE, a weekly
+    // Flagged unusable for wing metrics — a 25-delta search here would clamp.
+    expect(weekly?.usableForSkew).toBe(false);
+
+    // And the 30-day point is now genuinely bracketed: 13 DTE below, 41 above.
+    const dtes = selected.map((e) => e.dte).sort((a, b) => a - b);
+    expect(dtes.some((d) => d < 30)).toBe(true);
+    expect(dtes.some((d) => d > 30)).toBe(true);
+  });
+
   it("honours minDte, excluding the near monthly", () => {
     // 2026-07-17 is a monthly but only 6 DTE — inside the gamma/pin noise zone.
-    const selected = selectExpiries(available, [7], 21, now);
+    const selected = selectExpiries(available, skewOnly([7]), 21, now);
     expect(selected[0]?.expiration).not.toBe("2026-07-17");
     expect(selected[0]?.dte).toBeGreaterThanOrEqual(21);
   });
 
-  it("dedupes when two targets resolve to the same expiration", () => {
+  it("fetches an expiry once when several targets resolve to it", () => {
     const sparse = [utc("2026-08-21"), utc("2026-09-18")];
-    const selected = selectExpiries(sparse, [30, 40, 90], 21, now);
+    const selected = selectExpiries(sparse, skewOnly([30, 40, 90]), 21, now);
     const expirations = selected.map((e) => e.expiration);
     expect(new Set(expirations).size).toBe(expirations.length);
-    // 30d and 40d both land on 2026-08-21 (41 DTE); it is kept once, under the
-    // target it matches most closely (40, not 30).
+
+    // 30d and 40d both land on 2026-08-21 (41 DTE). It is captured once, and
+    // records both targets — each Yahoo call is an expiration, so paying twice
+    // for the same one is pure rate-limit budget burned.
     const august = selected.find((e) => e.expiration === "2026-08-21");
-    expect(august?.targetDte).toBe(40);
+    expect(august?.targetDtes).toEqual([30, 40]);
+  });
+
+  it("marks an expiry serving both a term and a skew target usable for skew", () => {
+    const selected = selectExpiries(
+      available,
+      { skew: [30], term: [40] },
+      21,
+      now,
+    );
+    const august = selected.find((e) => e.expiration === "2026-08-21");
+    expect(august?.targetDtes).toEqual([30, 40]);
+    // It is a real monthly, so the term target does not demote it.
+    expect(august?.usableForSkew).toBe(true);
   });
 
   it("falls back to weeklies only when the ticker lists no monthly in range", () => {
@@ -112,16 +157,19 @@ describe("selectExpiries", () => {
       utc("2026-08-14"),
       utc("2026-08-28"),
     ];
-    const selected = selectExpiries(weekliesOnly, [30], 21, now);
+    const selected = selectExpiries(weekliesOnly, skewOnly([30]), 21, now);
     expect(selected).toHaveLength(1);
-    // Flagged, so downstream can discount a reading taken off a thin ladder.
+    // Flagged, so no 25-delta reading is ever taken off a thin ladder.
     expect(selected[0]?.standardMonthly).toBe(false);
+    expect(selected[0]?.usableForSkew).toBe(false);
     // Closest to the 30d target: 2026-08-07 is 27 DTE, 2026-08-14 is 34.
     expect(selected[0]?.expiration).toBe("2026-08-07");
   });
 
   it("returns nothing when no expiration clears minDte", () => {
-    expect(selectExpiries([utc("2026-07-13")], [30], 21, now)).toEqual([]);
-    expect(selectExpiries([], [30], 21, now)).toEqual([]);
+    expect(
+      selectExpiries([utc("2026-07-13")], skewOnly([30]), 21, now),
+    ).toEqual([]);
+    expect(selectExpiries([], skewOnly([30]), 21, now)).toEqual([]);
   });
 });
