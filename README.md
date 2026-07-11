@@ -221,6 +221,108 @@ reported separately.
   hypothetical €10,000 position**. A deterministic heuristic fills in when no AI
   key is set. This is educational analysis, **not financial advice**.
 
+## HedgeScope (`/hedge`)
+
+An options-market monitoring surface that scans a universe of tickers on a
+schedule and surfaces hedging setups. It lives alongside `/` and `/chart` in the
+same server, reusing this app's providers, cache, AI layer and deploy pipeline.
+
+Everything non-secret is configured in **`hedge.config.yaml`** at the repo root —
+ticker universe, scan schedule, tenors, thresholds, ratio pairs. It is
+Zod-validated at startup: a malformed value fails the boot loudly rather than
+silently disabling a scanner. Compose bind-mounts it read-only, so you can edit
+it and restart without a rebuild. Secrets stay in `.env`.
+
+### ⚠️ The volume — read this before you next prune
+
+**IV rank needs 252 trading days of accumulated history, and there is no upstream
+to re-download it from.** HedgeScope therefore introduces the first piece of real
+persistence in this stack: a SQLite database on the named `hedge-data` volume.
+
+Until now the stack had **no volumes at all**, so `docker system prune --volumes`
+was harmless here and you may well have it in your muscle memory. It is not
+harmless any more:
+
+```bash
+docker system prune --volumes     # ⚠️ DESTROYS the IV history
+docker compose down -v            # ⚠️ DESTROYS the IV history
+```
+
+Losing it is not fatal — nothing crashes — but IV rank silently reverts to a
+**realized-volatility proxy** and stays that way for months while the series
+refills. The dashboard labels that state explicitly (see below) rather than
+quietly serving degraded numbers.
+
+To back it up:
+
+```bash
+docker compose exec web sh -c 'sqlite3 /data/hedge.db ".backup /tmp/b.db"' \
+  && docker compose cp web:/tmp/b.db ./hedge-backup.db
+```
+
+### Storage choice: `node:sqlite`, not `better-sqlite3`
+
+The database uses Node's **built-in** `node:sqlite` (available unflagged on the
+image's Node 22). `better-sqlite3` is the more common pick and is equally
+synchronous, so it buys nothing on performance — but it is a **native addon**,
+which would mean adding `python3`/`make`/`g++` to the Docker build stage and
+depending on an arm64 prebuild at every Node upgrade. The built-in needs none of
+that. It is still marked experimental, so the server prints one
+`ExperimentalWarning` at boot; that is expected. `src/lib/hedge/db/client.ts`
+wraps it behind a small interface, so switching drivers later is a one-file
+change.
+
+### IV rank is _proxied_ until the history fills
+
+On day one there is no IV history, so IV rank is computed from **realized
+volatility** instead — it is a realized-vol rank wearing an IV-rank costume, and
+it gates the protective-put and call-credit scanners. Rather than hide that, every
+proxied value is flagged as such in the API payload (`ivRankProxied`,
+`ivHistoryDays`) and badged in the UI. Setups still rank and display from day one;
+you can just see exactly how much to trust them. The threshold at which a ticker
+graduates to a real IV rank is `metrics.ivRankMinRealDays` (default 60).
+
+### Scanning
+
+Scans run weekdays at 10:00 and 15:30 ET (`schedule.crons`), driven by a
+`node-cron` scheduler started from `instrumentation.ts` and guarded by a Redis
+lock so it cannot double-fire. Scans are IO-bound, so running them in-process is
+fine to start. If they ever compete with request serving, the escape hatch needs
+no new image: run a **second container from the same image** with
+`HEDGE_ROLE=scanner` (and set the web container to `HEDGE_ROLE=web`), both
+writing to the shared `hedge-data` volume.
+
+Yahoo is the default chain provider and **will rate-limit an aggressive scan**, so
+requests are staggered, bounded-concurrency, retried with exponential backoff and
+cached server-side. `TradierProvider` and `PolygonProvider` are stubbed against
+the same `ChainProvider` interface, so a paid feed can be swapped in without the
+metrics layer changing.
+
+Two provider behaviours worth knowing, both observed live and handled:
+
+- Yahoo lists **weekly** expirations whose strike ladders are far shallower than
+  the monthlies' (AAPL's 8/14 weekly spanned strikes 200–335; the 8/21 monthly
+  spanned 110–600). A 25-delta search on a weekly silently clamps to the edge of
+  the ladder, so expiry selection **snaps to standard monthlies** (3rd Friday).
+- Some symbols have no chain at all (`^TNX`), and `calendarEvents` _throws_ for
+  ETFs rather than returning empty. Both are skipped with a logged reason; a bad
+  ticker never aborts a scan.
+
+### Storage growth
+
+Raw chains are stored gzipped, verbatim, so a metric can be recomputed after a
+bug fix without re-fetching. Budget roughly **20 KB per ticker per scan**
+(measured: SPY ~40 KB, `^SPX` ~75 KB, a thin ETF such as CPER ~5 KB) — about
+1.7 MB per scan of the default 85-ticker universe, so on the order of
+**~0.9 GB per year** at two scans a day.
+
+The `history` table that IV rank actually reads is tiny by comparison (a few
+hundred bytes per ticker per day). So if space gets tight, old `chain_snapshots`
+rows can be pruned freely **without touching the IV history** — they are a
+recompute convenience, not the irreplaceable part.
+
+---
+
 ## Deployment (Vercel)
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new)

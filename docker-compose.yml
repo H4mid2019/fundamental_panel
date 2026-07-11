@@ -16,8 +16,20 @@ services:
       - NODE_ENV=production
       # Use the bundled Redis. Pick the DB index with REDIS_DB in .env (0-15).
       - REDIS_URL=redis://redis:6379/${REDIS_DB:-0}
+      # HedgeScope's SQLite lives on the named volume below — see the warning.
+      - HEDGE_DB_PATH=/data/hedge.db
+      - HEDGE_CONFIG_PATH=/app/hedge.config.yaml
     depends_on:
       - redis
+    volumes:
+      # ⚠️  REAL STORAGE, NOT A CACHE. This volume holds the accumulated daily
+      # IV history that IV rank is computed from — 252 trading days of it, which
+      # cannot be re-fetched from anywhere. `docker compose down -v` and
+      # `docker system prune --volumes` DESTROY it. See README → "The volume".
+      - hedge-data:/data
+      # Mounted read-only so the universe, schedule and thresholds can be edited
+      # and applied with a restart, no rebuild.
+      - ./hedge.config.yaml:/app/hedge.config.yaml:ro
     ports:
       - "127.0.0.1:3500:3000"
     healthcheck:
@@ -45,3 +57,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  # HedgeScope's SQLite database. This is the only durable state in the stack:
+  # everything else is fetch-and-cache and rebuilds itself on the next request.
+  # IV rank needs 252 days of accumulated daily snapshots, and there is no
+  # upstream to re-download them from — once destroyed, the history restarts at
+  # zero and IV rank falls back to a realized-volatility proxy for months.
+  hedge-data:

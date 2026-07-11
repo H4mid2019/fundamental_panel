@@ -35,6 +35,22 @@ const envSchema = z.object({
 
   // When truthy, every provider serves deterministic fixtures (used by E2E).
   USE_FIXTURES: z.string().optional(),
+
+  // ── HedgeScope (/hedge) ─────────────────────────────────────────────────
+  // Path to the SQLite file holding accumulated IV history. Unlike the rest of
+  // the app this is real storage, not a cache: losing it loses the 252-day IV
+  // series that IV rank is computed from. In Docker it lives on a named volume.
+  HEDGE_DB_PATH: z.string().min(1).default("./data/hedge.db"),
+  // Overrides the `hedge.config.yaml` location (the container mounts it).
+  HEDGE_CONFIG_PATH: z.string().min(1).optional(),
+  // Shared secret required by `POST /api/hedge/scan`. When unset, the manual
+  // scan endpoint is disabled rather than left open.
+  HEDGE_SCAN_SECRET: z.string().min(1).optional(),
+  // Set on the scanner container so exactly one process owns the cron loop.
+  // "web" serves requests only; "scanner" runs scans only; "all" does both.
+  HEDGE_ROLE: z.enum(["web", "scanner", "all"]).default("all"),
+  // Optional Slack incoming-webhook for alert delivery; skipped silently if unset.
+  SLACK_WEBHOOK_URL: z.url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -82,4 +98,7 @@ export const features = {
   forceFixtures: ["1", "true", "yes"].includes(
     (env.USE_FIXTURES ?? "").toLowerCase(),
   ),
+  slack: Boolean(env.SLACK_WEBHOOK_URL),
+  manualScan: Boolean(env.HEDGE_SCAN_SECRET),
+  hedgeScheduler: env.HEDGE_ROLE !== "web",
 } as const;

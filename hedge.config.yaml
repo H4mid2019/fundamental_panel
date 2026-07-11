@@ -1,0 +1,283 @@
+# HedgeScope configuration.
+#
+# Mounted into the container (see docker-compose.yml), so you can edit the
+# universe, schedule and thresholds and restart without a rebuild. Every field
+# below is Zod-validated at startup — a malformed value fails fast and loudly
+# rather than silently disabling a scanner.
+#
+# Secrets do NOT belong here. They live in `.env` (HEDGE_SCAN_SECRET,
+# SLACK_WEBHOOK_URL, OPENROUTER_API_KEY, ...).
+
+# ── Ticker universe ───────────────────────────────────────────────────────────
+# Every symbol is scanned for a full option-chain snapshot. Symbols Yahoo has no
+# chain for are skipped with a loud warning; they never abort the scan.
+universe:
+  # Broad-market index ETFs
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  # Sector / thematic ETFs
+  - XLE
+  - XLF
+  - XLK
+  - XLV
+  - XLI
+  - XLU
+  - XLP
+  - XLY
+  - XLB
+  # Commodities, credit, rates, international
+  - GLD
+  - GDX
+  - SLV
+  - USO
+  - TLT
+  - HYG
+  - LQD
+  - EEM
+  - FXI
+  # Liquid optionable large caps
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - TSLA
+  - AVGO
+  - BRK-B
+  - LLY
+  - JPM
+  - V
+  - MA
+  - XOM
+  - UNH
+  - JNJ
+  - PG
+  - HD
+  - COST
+  - ABBV
+  - MRK
+  - CVX
+  - WMT
+  - PEP
+  - KO
+  - ADBE
+  - CRM
+  - AMD
+  - NFLX
+  - ORCL
+  - CSCO
+  - ACN
+  - MCD
+  - TMO
+  - ABT
+  - LIN
+  - DIS
+  - INTC
+  - QCOM
+  - TXN
+  - INTU
+  - CAT
+  - BA
+  - GE
+  - HON
+  - IBM
+  - GS
+  - MS
+  - BAC
+  - WFC
+  - C
+  - PFE
+  - AMGN
+  - NKE
+  - SBUX
+  - LOW
+  - UPS
+  - RTX
+  - DE
+  - MU
+  - PLTR
+  - COIN
+  - SMCI
+
+# Context-only series: quoted for the top bar and the tail-hedge composite, but
+# never scanned for option setups.
+context:
+  # VIX term structure. These are *indices*, not futures — Yahoo quotes all four,
+  # which gives a term-structure slope for free (no futures feed required).
+  vixTerm: ["^VIX9D", "^VIX", "^VIX3M", "^VIX6M"]
+  # 10-year Treasury yield.
+  rates: ["^TNX"]
+  # The correlation benchmark every ticker is measured against.
+  benchmark: SPY
+  # Underlyings used for the tail-hedge monitor's cheap far-OTM put spreads.
+  tailHedgeUnderlyings: ["SPY", "^SPX"]
+
+# ── Scan schedule ─────────────────────────────────────────────────────────────
+# Weekdays, 30 min after the US open and 30 min before the close. Cron runs in
+# `timezone`, so DST is handled for you — do not hardcode UTC offsets here.
+schedule:
+  enabled: true
+  timezone: America/New_York
+  crons:
+    - "0 10 * * 1-5" # 10:00 ET — 30 min after the open
+    - "30 15 * * 1-5" # 15:30 ET — 30 min before the close
+
+# ── Chain fetching ────────────────────────────────────────────────────────────
+# Yahoo returns ONE expiration's chain per HTTP call, so the tenor list below is
+# the per-ticker call budget. Keep it small: universe × tenors = calls per scan.
+chain:
+  # Target days-to-expiry. For each, the scan picks the nearest *standard monthly*
+  # (3rd Friday) expiration at or beyond `minDte`. Monthlies matter: weeklies list
+  # far fewer strikes (AAPL's 8/14 weekly spans 200-335; the 8/21 monthly spans
+  # 110-600), and a 25-delta search on a thin chain silently picks a bad strike.
+  targetDte: [30, 90, 180]
+  # Never select an expiration closer than this (gamma/pin noise, garbage IV).
+  minDte: 21
+  # Concurrent Yahoo requests. Yahoo will 429 an aggressive scan; 3 is polite.
+  concurrency: 3
+  # Random jitter (ms) added between requests to avoid a synchronized burst.
+  jitterMs: [120, 400]
+  # Retries per request with exponential backoff, for 429s and transient 5xxs.
+  maxRetries: 3
+  # Server-side cache TTL for a fetched chain, so a manual re-scan minutes after
+  # a cron scan does not re-hammer Yahoo.
+  cacheTtlSeconds: 600
+  # Contract hygiene. Contracts failing these are excluded from metrics (they
+  # are still kept in the raw snapshot, which is stored verbatim).
+  quality:
+    # Drop contracts with no two-sided market.
+    requireTwoSidedQuote: true
+    # Drop contracts whose bid/ask is wider than this fraction of the mid.
+    maxRelativeSpread: 1.0
+    # Drop implied vols outside this band as unphysical.
+    minIv: 0.01
+    maxIv: 5.0
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+metrics:
+  # Trailing window for IV rank / IV percentile.
+  ivRankLookbackDays: 252
+  # Below this many *real* (non-proxied) IV observations, IV rank is computed
+  # from realized-volatility rank instead and flagged `proxied` everywhere it is
+  # surfaced — in the API payload, on the heatmap and on every affected setup.
+  ivRankMinRealDays: 60
+  # Rolling window for the put-skew / call-put-spread / term-slope z-scores.
+  skewZLookbackDays: 120
+  # Rolling correlation window, and the multi-year band a correlation must break
+  # out of to count as a regime change.
+  correlationWindowDays: 60
+  correlationRegimeLookbackDays: 756
+  # Realized-vol window used for price context and as the IV-rank proxy basis.
+  realizedVolWindowDays: 20
+  # Risk-free rate for Black-Scholes. `source: tnx` reads the live 10y yield from
+  # ^TNX and falls back to `fallbackRate` when unavailable.
+  riskFreeRate:
+    source: tnx
+    fallbackRate: 0.042
+
+# ── Ratio pairs ───────────────────────────────────────────────────────────────
+# Rolling z-score of the numerator/denominator close ratio. The two legs may
+# trade on different calendars, so the denominator is forward-filled (never zip
+# two price series positionally).
+pairs:
+  lookbackDays: 120
+  list:
+    - id: gld-gdx
+      numerator: GLD
+      denominator: GDX
+      label: Gold vs Gold Miners
+    - id: uso-xle
+      numerator: USO
+      denominator: XLE
+      label: Crude vs Energy Equities
+    - id: iwm-spy
+      numerator: IWM
+      denominator: SPY
+      label: Small Caps vs Large Caps
+    - id: hyg-tlt
+      numerator: HYG
+      denominator: TLT
+      label: High Yield vs Treasuries
+    - id: copper-gld
+      numerator: CPER # copper-proxy ETF
+      denominator: GLD
+      label: Copper vs Gold
+
+# ── Strategy scanners ─────────────────────────────────────────────────────────
+scanners:
+  # How many ranked setups each scanner keeps per scan.
+  topN: 20
+
+  protectivePut:
+    enabled: true
+    # Put protection is cheap: low IV rank AND price above its 200-day MA.
+    maxIvRank: 25
+    minPctVs200dma: 0
+    otmPctRange: [5, 10]
+    dteRange: [60, 120]
+
+  putDebitSpread:
+    enabled: true
+    # Ranked by put-skew steepness — a steep skew makes the short leg rich.
+    longStrikeOffsetPct: -5 # buy ~5% below spot
+    shortStrikeOffsetPct: -15 # sell ~15% below spot
+    dteRange: [45, 120]
+    minSkewZ: 0.5
+
+  callCredit:
+    enabled: true
+    # Rich vol AND a stretched price: sell upside.
+    minIvRank: 70
+    minPctVs200dma: 8
+    shortDeltaRange: [0.20, 0.30]
+    wingWidthPct: 5
+    dteRange: [30, 60]
+
+  collar:
+    enabled: true
+    # Ranked by call-minus-put IV spread (richest calls relative to puts).
+    shortCallDeltaRange: [0.20, 0.30]
+    longPutDeltaRange: [0.20, 0.25]
+    dteRange: [90, 365]
+    # Penalties (subtracted from the raw score) for real-world frictions.
+    penalties:
+      earningsInTenor: 1.5
+      exDivBeforeExpiry: 1.0 # early-assignment risk on the short call
+      wideSpread: 2.0 # bid/ask > `maxRelativeSpreadPct` of mid
+      thinOpenInterest: 2.0 # open interest < `minOpenInterest`
+    maxRelativeSpreadPct: 10
+    minOpenInterest: 500
+
+  tailHedge:
+    enabled: true
+    # Composite: VIX term slope + credit divergence + SPY put skew. Fires when
+    # credit deteriorates while equity vol stays complacent.
+    otmPctRange: [15, 30]
+    dteRange: [60, 180]
+    # Composite score above which the monitor flags cheap far-OTM put spreads.
+    minCompositeScore: 1.5
+
+# ── Alerts ────────────────────────────────────────────────────────────────────
+alerts:
+  # Any tracked z-score crossing this magnitude fires.
+  zScoreThreshold: 2.5
+  # A scanner's top-ranked setup fires when its score crosses this.
+  scannerScoreThreshold: 3.0
+  # Term-structure inversion and correlation regime breaks always fire.
+  onTermInversion: true
+  onCorrelationRegimeBreak: true
+  # Do not re-fire the same (ticker, type) alert within this window.
+  cooldownDays: 3
+  # Alerts derived from a proxied (realized-vol-based) IV rank are still fired,
+  # but tagged `proxied` so you know the basis. Set false to suppress them.
+  fireOnProxiedIvRank: true
+
+# ── AI interpretation ─────────────────────────────────────────────────────────
+ai:
+  enabled: true
+  # Interpret the top N setups/alerts after each scan. Everything works with no
+  # API key set — the deterministic local fallback fills in.
+  topN: 5

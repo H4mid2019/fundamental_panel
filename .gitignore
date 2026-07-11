@@ -45,3 +45,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# HedgeScope SQLite database (real storage — see README).
+/data/
+*.db
+*.db-wal
+*.db-shm
