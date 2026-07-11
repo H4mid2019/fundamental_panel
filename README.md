@@ -408,6 +408,37 @@ npm run hedge:backfill    # 2. rebuild ~252 days of history
 npm run hedge:scan        # 3. scan again — the IV-rank scanners now fire
 ```
 
+**On the server** (Docker Compose, app bound to `127.0.0.1:3500`), the scripts are a
+thin HTTP client, so plain `curl` from the host does the same job and needs no Node
+installed:
+
+```bash
+cd /opt/fundamental_panel
+SECRET=$(grep '^HEDGE_SCAN_SECRET=' .env | cut -d= -f2-)
+H="x-hedge-secret: $SECRET"
+
+curl -fsS -X POST -H "$H" http://127.0.0.1:3500/api/hedge/scan       # 1
+sleep 180                                                            #    wait for it
+curl -fsS -X POST -H "$H" http://127.0.0.1:3500/api/hedge/backfill   # 2
+sleep 300                                                            #    wait for it
+curl -fsS -X POST -H "$H" http://127.0.0.1:3500/api/hedge/scan       # 3
+
+curl -fsS http://127.0.0.1:3500/api/hedge/health | jq   # confirm
+```
+
+All three endpoints return **202 immediately** and do the work in the background, so
+the `sleep`s are what you are waiting on, not the request. Watch progress with
+`docker compose logs -f web` — each ticker logs as it lands. Confirm from
+`/api/hedge/health`: `ivRank.proxied` should flip to `false` and `history.days`
+should read ~252.
+
+Order matters, and not only for calibration: the scan warms the provider cache, so
+the backfill mostly reads from it instead of making another ~170 Yahoo calls.
+
+The backfill is **idempotent and safe to re-run** — later runs recalibrate against
+whatever real scans have since accumulated, and will not overwrite a real observation
+with a proxy.
+
 IV rank needs 252 days of trailing observations. On a fresh install there are none,
 so the two scanners gated on it return nothing. The backfill fills the gap with the
 only data that honestly exists:

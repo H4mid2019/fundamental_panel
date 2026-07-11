@@ -255,6 +255,81 @@ describe("history", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The backfill/scan interaction. A backfill row carries no ATM IV, so it must
+// never be allowed to relabel a real one as a proxy — that would erase the real
+// IV history of every ticker without a CBOE vol index, silently.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("history: a proxy must never overwrite a real observation's flags", () => {
+  const real = history({
+    asOf: "2026-07-10",
+    atmIv: 18,
+    atmIvProxied: false,
+    atmIvBasis: "chain",
+  });
+
+  /** What a backfill writes: realized vol only, no implied vol at all. */
+  const backfilled = history({
+    asOf: "2026-07-10",
+    atmIv: null,
+    atmIvProxied: true,
+    atmIvBasis: "realized_proxy",
+    realizedVol20d: 15,
+    source: "backfill",
+  });
+
+  it("keeps the real ATM IV *and* its flags when a backfill lands on the same day", () => {
+    upsertHistory([real], db);
+    upsertHistory([backfilled], db);
+
+    const rows = getHistory("SPY", 252, db);
+    expect(rows).toHaveLength(1);
+
+    // The value survives...
+    expect(rows[0]?.atmIv).toBe(18);
+    // ...and so do the flags that describe it. Without this, the row still holds
+    // a real 18% IV while claiming to be a realized-vol proxy.
+    expect(rows[0]?.atmIvProxied).toBe(false);
+    expect(rows[0]?.atmIvBasis).toBe("chain");
+
+    // The backfill's own contribution is still merged in.
+    expect(rows[0]?.realizedVol20d).toBe(15);
+  });
+
+  it("does not let a backfill un-mature the IV rank", () => {
+    upsertHistory([real, history({ asOf: "2026-07-09", atmIv: 17 })], db);
+    expect(countRealIvDays("SPY", db)).toBe(2);
+
+    // Re-running a backfill over months of accumulated scans must not reset this.
+    upsertHistory([backfilled, { ...backfilled, asOf: "2026-07-09" }], db);
+    expect(countRealIvDays("SPY", db)).toBe(2);
+  });
+
+  it("still ACCEPTS flags from a row that genuinely brings an ATM IV", () => {
+    upsertHistory([backfilled], db);
+    expect(countRealIvDays("SPY", db)).toBe(0);
+
+    // A CBOE vol-index overlay DOES bring implied vol, so its flags must win.
+    upsertHistory(
+      [
+        history({
+          asOf: "2026-07-10",
+          atmIv: 16,
+          atmIvProxied: false,
+          atmIvBasis: "vol_index",
+          source: "backfill",
+        }),
+      ],
+      db,
+    );
+
+    const rows = getHistory("SPY", 252, db);
+    expect(rows[0]?.atmIv).toBe(16);
+    expect(rows[0]?.atmIvBasis).toBe("vol_index");
+    expect(countRealIvDays("SPY", db)).toBe(1);
+  });
+});
+
 describe("countRealIvDays", () => {
   // This is what gates the `proxied` badge: only genuine ATM IV observations
   // count, so a backfilled realized-vol proxy must never mature the IV rank.

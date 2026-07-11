@@ -262,8 +262,31 @@ export function upsertHistory(
          ON CONFLICT (ticker, as_of) DO UPDATE SET
            close            = COALESCE(excluded.close,            history.close),
            atm_iv           = COALESCE(excluded.atm_iv,           history.atm_iv),
-           atm_iv_proxied   = excluded.atm_iv_proxied,
-           atm_iv_basis     = COALESCE(excluded.atm_iv_basis,     history.atm_iv_basis),
+           -- The flags MUST travel with the value they describe.
+           --
+           -- A backfill row carries (atm_iv = NULL, proxied = true, basis =
+           -- 'realized_proxy'). The COALESCE above correctly KEEPS an existing
+           -- real ATM IV — but stamping the flags unconditionally would then
+           -- relabel that real observation as a proxy. countRealIvDays would stop
+           -- counting it and the IV rank would never mature. Re-running a backfill
+           -- after months of scans would have silently erased the real IV history
+           -- of every ticker without a CBOE vol index.
+           --
+           -- So: adopt the incoming flags only when the incoming row actually
+           -- brings an ATM IV. Otherwise keep whatever describes the value we are
+           -- keeping.
+           atm_iv_proxied   = CASE
+                                WHEN excluded.atm_iv IS NULL
+                                 AND history.atm_iv IS NOT NULL
+                                THEN history.atm_iv_proxied
+                                ELSE excluded.atm_iv_proxied
+                              END,
+           atm_iv_basis     = CASE
+                                WHEN excluded.atm_iv IS NULL
+                                 AND history.atm_iv IS NOT NULL
+                                THEN history.atm_iv_basis
+                                ELSE COALESCE(excluded.atm_iv_basis, history.atm_iv_basis)
+                              END,
            realized_vol_20d = COALESCE(excluded.realized_vol_20d, history.realized_vol_20d),
            ewma_vol         = COALESCE(excluded.ewma_vol,         history.ewma_vol),
            vrp              = COALESCE(excluded.vrp,              history.vrp),
