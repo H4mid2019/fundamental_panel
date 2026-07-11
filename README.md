@@ -117,24 +117,25 @@ fail fast.
 
 ## Scripts
 
-| Script                 | Description                                  |
-| ---------------------- | -------------------------------------------- |
-| `npm run dev`          | Start the dev server                         |
-| `npm run build`        | Production build                             |
-| `npm run start`        | Serve the production build                   |
-| `npm run lint`         | ESLint (zero warnings allowed)               |
-| `npm run lint:fix`     | ESLint with autofix                          |
-| `npm run format`       | Prettier write                               |
-| `npm run format:check` | Prettier check                               |
-| `npm run typecheck`    | `tsc --noEmit`                               |
-| `npm run test`         | Vitest unit tests with coverage              |
-| `npm run test:watch`   | Vitest watch mode                            |
-| `npm run test:e2e`     | Playwright smoke test (builds + serves app)  |
-| `npm run check`        | lint + format:check + typecheck + test       |
-| `npm run check:apis`   | Live health-check of configured API keys     |
-| `npm run hedge:scan`   | Trigger a HedgeScope scan (needs the server) |
-| `npm run hedge:health` | Schema version, last scan, IV-rank readiness |
-| `npm run analyze`      | Bundle analysis (`@next/bundle-analyzer`)    |
+| Script                   | Description                                  |
+| ------------------------ | -------------------------------------------- |
+| `npm run dev`            | Start the dev server                         |
+| `npm run build`          | Production build                             |
+| `npm run start`          | Serve the production build                   |
+| `npm run lint`           | ESLint (zero warnings allowed)               |
+| `npm run lint:fix`       | ESLint with autofix                          |
+| `npm run format`         | Prettier write                               |
+| `npm run format:check`   | Prettier check                               |
+| `npm run typecheck`      | `tsc --noEmit`                               |
+| `npm run test`           | Vitest unit tests with coverage              |
+| `npm run test:watch`     | Vitest watch mode                            |
+| `npm run test:e2e`       | Playwright smoke test (builds + serves app)  |
+| `npm run check`          | lint + format:check + typecheck + test       |
+| `npm run check:apis`     | Live health-check of configured API keys     |
+| `npm run hedge:scan`     | Trigger a HedgeScope scan (needs the server) |
+| `npm run hedge:backfill` | Rebuild ~252 days of history (see below)     |
+| `npm run hedge:health`   | Schema version, last scan, IV-rank readiness |
+| `npm run analyze`        | Bundle analysis (`@next/bundle-analyzer`)    |
 
 ---
 
@@ -303,12 +304,24 @@ opinion is not silently bolted onto your thresholds.
 
 ### The data-quality badge
 
-Put-call parity (`C − P = S·e^(−qT) − K·e^(−rT)`) is enforced by arbitrage, not by
-a model — so a _live_ market satisfies it to within the bid/ask spread. A pair
-that violates it by far more than the spread can explain is not saying something
-interesting about volatility: **one of its legs is stale.** Yahoo's chains are full
-of these, and an implied vol solved from a stale price is not
-noisy-but-unbiased — it is simply wrong, and averaging more of them does not help.
+Put-call parity is enforced by arbitrage, not by a model — so a _live_ market
+satisfies it to within the bid/ask spread. A pair that violates it by far more than
+the spread can explain is not saying something interesting about volatility: **one
+of its legs is stale.** Yahoo's chains are full of these, and an implied vol solved
+from a stale price is not noisy-but-unbiased — it is simply wrong, and averaging
+more of them does not help.
+
+The forward is **implied from the chain itself** (`F = K + e^(rT)(C − P)`, taken as
+the median across the near-the-money strikes) rather than computed as
+`S·e^((r−q)T)`. That matters more than it sounds. Testing against a spot captured a
+moment before the chain charges every strike on the board for that clock drift, and
+a wrong dividend yield does the same — both produce a wall of "violations" that have
+nothing to do with staleness. Switching to the implied forward cut SPY's rejection
+rate from 14% to **6.4%** and upgraded SPY, QQQ and DIA from `degraded` to `good`.
+
+It also hands back the dividend yield the option market is _actually_ trading
+against (`q = r − ln(F/S)/T`), which beats any quoted field — it silently includes
+borrow cost and hard-to-borrow rates that no dividend field knows about.
 
 Violating rows are excluded from every metric, and each ticker carries a badge:
 
@@ -387,14 +400,71 @@ _credit deteriorating while equity vol is still asleep._ Credit usually moves
 first. Note the sign on skew — a **flat** skew means the tail is cheap; a steep one
 means it is already bid, and there is nothing on sale.
 
+### Backfill: making the ranks work on day one
+
+```bash
+npm run hedge:scan        # 1. scan once, so the backfill has a measured ATM IV
+npm run hedge:backfill    # 2. rebuild ~252 days of history
+npm run hedge:scan        # 3. scan again — the IV-rank scanners now fire
+```
+
+IV rank needs 252 days of trailing observations. On a fresh install there are none,
+so the two scanners gated on it return nothing. The backfill fills the gap with the
+only data that honestly exists:
+
+| What                    | Coverage                    | How                                                             |
+| ----------------------- | --------------------------- | --------------------------------------------------------------- |
+| **Realized vol / EWMA** | **all 85 tickers**          | Rebuilt from the 3 years of candles we already fetch            |
+| **Real implied vol**    | **SPY, QQQ, DIA, GLD, USO** | CBOE 30-day IV indices (`^VIX`, `^VXN`, `^VXD`, `^GVZ`, `^OVX`) |
+| **25-delta skew**       | none                        | No free historical source exists, at any price                  |
+
+Those five get a **genuinely non-proxied** IV rank immediately — a CBOE implied-vol
+index _is_ implied vol, just measured by CBOE rather than by us. The other eighty
+get a flagged realized-vol proxy that at least **ranks**, which beats a null.
+
+Two caveats worth knowing:
+
+- **The single-name CBOE indices are dead.** `^VXAPL`, `^VXGOG`, `^VXIBM` and the
+  rest return a single bar — CBOE discontinued them. Per-name historical implied
+  vol is a paid product (ORATS, Polygon options, IVolatility, CBOE DataShop).
+- **The vol index is level-calibrated, not spliced raw.** VIX is a variance-swap
+  strip across the whole surface, so the wings drag it above the ATM point
+  (measured: SPY ATM IV 13.3% against a VIX of 15.03). Splicing raw values onto a
+  series that continues in ATM IV would put a step change at the join, and IV rank
+  — a position within a range — would read that step as a vol regime change that
+  never happened. So the index is scaled by the ratio of the ticker's own measured
+  ATM IV to the index on the same day. That fixes the level and leaves the _shape_
+  untouched, which is all a rank reads.
+
+**Skew has no backfill at all.** So `putDebitSpread`, which ranks on the skew
+z-score, falls back to a **cross-sectional** z — "steep versus the universe today"
+rather than "steep versus this ticker's own history". That is a genuinely different
+and weaker question (a name with a structurally steep skew looks extreme every day,
+because it always is), so every affected setup is warned and every row carries
+`skew_z_basis = 'cross_sectional'`. It resolves itself after ~20 sessions.
+
 ### What you will see on day one
 
-`protectivePut`, `putDebitSpread` and `callCredit` are gated on IV rank and skew
-z-scores, and **those need accumulated history that does not exist yet**. On a
-fresh install they will correctly return nothing. The collar and tail-hedge
-scanners work immediately, because they read today's chain rather than its
-history. This is honest behaviour, not a bug — and it is exactly why VRP, which
-needs no history at all, is the signal to trust in the first weeks.
+**Without a backfill**, `protectivePut`, `putDebitSpread` and `callCredit` return
+nothing at all: they are gated on IV rank and skew z-scores, and those need
+accumulated history that does not exist yet. Collar and tail-hedge work
+immediately, because they read today's chain rather than its history.
+
+**With a backfill**, all five fire. From a live run on 18 tickers:
+
+```text
+protectivePut : SPY(3.7) DIA(2.7) USO(1.4)
+putDebitSpread: SPY(5.8) QQQ(3.4)
+callCredit    : AAPL(1.9) AMD(0.2)
+collar        : 17 setups
+tailHedge     : SPY(3.1)
+```
+
+Read them with the badges on, though. SPY/QQQ/DIA/GLD/USO carry a real,
+non-proxied IV rank; everything else is ranking a realized-vol proxy and says so.
+Skew z-scores are cross-sectional until ~20 sessions accumulate. **VRP is the one
+number that needs no history and is honest from the first scan** — which is why it
+is displayed next to IV rank rather than behind it.
 
 ### Alerts
 

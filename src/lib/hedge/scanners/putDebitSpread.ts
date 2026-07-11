@@ -72,6 +72,18 @@ export const putDebitSpreadScanner: Scanner = {
     let score = m.putSkewZ + payoffRatio / 2;
 
     const warnings: string[] = [];
+
+    // A cross-sectional z answers "steep versus the universe today", not "steep
+    // versus this ticker's own history". A name with a structurally steep skew
+    // looks extreme every day, because it always is — so say so.
+    if (m.skewZBasis === "cross_sectional") {
+      warnings.push(
+        "Skew z-score is cross-sectional (vs the universe today), not vs this " +
+          "ticker's own history — no skew history has accumulated yet",
+      );
+      score -= 0.5;
+    }
+
     if (
       earningsInTenor(
         m.earningsDate,

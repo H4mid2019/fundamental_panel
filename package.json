@@ -20,7 +20,8 @@
     "analyze": "ANALYZE=true next build",
     "prepare": "husky",
     "hedge:scan": "node scripts/hedge-scan.mjs",
-    "hedge:health": "node -e \"fetch((process.env.HEDGE_URL||\"http://127.0.0.1:3000\")+\"/api/hedge/health\").then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\""
+    "hedge:health": "node -e \"fetch((process.env.HEDGE_URL||\"http://127.0.0.1:3000\")+\"/api/hedge/health\").then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2))).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "hedge:backfill": "node scripts/hedge-backfill.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

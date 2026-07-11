@@ -30,6 +30,8 @@ import { ivAtDelta, pchip } from "../math/interpolation";
 import {
   checkParity,
   gradeDataQuality,
+  impliedDividendYield,
+  impliedForward,
   type DataQualityReport,
 } from "../math/parity";
 import type { ChainSnapshot, HedgeContract, OptionRight } from "../types";
@@ -72,6 +74,10 @@ export interface ExpirySurface {
   usableForSkew: boolean;
   /** At-the-money-forward IV, or `null` when the strikes do not bracket it. */
   atmIv: number | null;
+  /** The forward implied from this expiry's own chain (see `math/parity`). */
+  forward: number;
+  /** The dividend yield the option market is trading against, if it could be implied. */
+  impliedQ: number | null;
   /** Out-of-the-money calls (strike above spot), ascending by strike. */
   calls: SurfacePoint[];
   /** Out-of-the-money puts (strike below spot), ascending by strike. */
@@ -127,44 +133,68 @@ function buildExpiry(
   const { quality } = config.chain;
   const parityLimits = config.metrics.parity;
 
-  // The forward, not spot: the option market prices off F = S*e^{(r-q)T}, and on
-  // a 5.5%-yielding name like HYG the forward sits visibly below spot. "At the
-  // money" means at the forward.
-  const forward = spot * Math.exp((rates.r - rates.q) * t);
-
   const all = [...expiry.calls, ...expiry.puts];
 
-  // ── 1. Parity: drop strikes whose call/put pair cannot both be trusted. ──
+  // ── 1. Imply the forward FROM THE CHAIN, then test parity against it. ──
+  //
+  // The forward is not computed as S*e^{(r-q)T}. It is implied from the most
+  // at-the-money quoted pair: F = K + e^{rT}(C - P). That needs no spot and no
+  // dividend yield, which is exactly why it is right — testing parity against a
+  // spot captured at a different instant, or against a dividend yield Yahoo is
+  // unsure of, charges every strike on the board for an error it did not commit.
   const callByStrike = new Map(expiry.calls.map((c) => [c.strike, c]));
   const putByStrike = new Map(expiry.puts.map((p) => [p.strike, p]));
-  const rejected = new Set<number>();
-  let parityViolations = 0;
+  const strikes = [...new Set([...callByStrike.keys(), ...putByStrike.keys()])];
 
-  for (const strike of new Set([
-    ...callByStrike.keys(),
-    ...putByStrike.keys(),
-  ])) {
-    const call = callByStrike.get(strike);
-    const put = putByStrike.get(strike);
-    // Parity needs both legs. A one-sided strike is not *proven* stale, so it is
-    // left to the quality filter below rather than rejected here.
-    if (!call || !put) continue;
-
-    const check = checkParity(
-      {
+  const pairs = strikes
+    .map((strike) => {
+      const call = callByStrike.get(strike);
+      const put = putByStrike.get(strike);
+      if (!call || !put) return null;
+      return {
         strike,
         callBid: call.bid,
         callAsk: call.ask,
         putBid: put.bid,
         putAsk: put.ask,
-      },
-      { s: spot, t, r: rates.r, q: rates.q },
-      parityLimits,
-    );
+      };
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null);
 
-    if (check.reason === "parity_violation") {
-      parityViolations += 1;
-      rejected.add(strike);
+  const implied = impliedForward(pairs, rates.r, t, spot);
+
+  // Fall back to the theoretical forward only when the chain cannot imply one
+  // (no strike with a two-sided market on both legs) — a genuinely broken chain.
+  const forward = implied?.forward ?? spot * Math.exp((rates.r - rates.q) * t);
+
+  // The dividend yield the *option market* is trading against. It beats any
+  // quoted field, because it silently includes borrow cost and hard-to-borrow
+  // rates that no dividend field knows about. Sanity-bounded: a nonsense forward
+  // on a broken chain must not poison every delta.
+  const marketQ =
+    implied !== null
+      ? impliedDividendYield(implied.forward, spot, rates.r, t)
+      : null;
+  const q =
+    marketQ !== null && marketQ >= -0.05 && marketQ <= 0.3 ? marketQ : rates.q;
+
+  const effectiveRates: RateContext = { ...rates, q };
+
+  const rejected = new Set<number>();
+  let parityViolations = 0;
+
+  if (implied !== null) {
+    for (const pair of pairs) {
+      const check = checkParity(
+        pair,
+        { forward: implied.forward, t, r: rates.r },
+        parityLimits,
+        implied.uncertainty,
+      );
+      if (check.reason === "parity_violation") {
+        parityViolations += 1;
+        rejected.add(pair.strike);
+      }
     }
   }
 
@@ -227,7 +257,7 @@ function buildExpiry(
 
     const iv = impliedVolatility(
       mid,
-      { s: spot, k: c.strike, t, r: rates.r, q: rates.q },
+      { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q },
       c.right,
     );
 
@@ -245,7 +275,7 @@ function buildExpiry(
 
     const absDelta = Math.abs(
       delta(
-        { s: spot, k: c.strike, t, r: rates.r, q: rates.q, sigma: iv },
+        { s: spot, k: c.strike, t, r: rates.r, q: effectiveRates.q, sigma: iv },
         c.right,
       ),
     );
@@ -309,6 +339,8 @@ function buildExpiry(
     standardMonthly: expiry.standardMonthly,
     usableForSkew: expiry.usableForSkew,
     atmIv: atmIv !== null && atmIv > 0 ? atmIv : null,
+    forward,
+    impliedQ: marketQ,
     calls,
     puts,
     contractsTotal: candidates,

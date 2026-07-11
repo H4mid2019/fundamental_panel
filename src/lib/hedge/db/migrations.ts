@@ -228,6 +228,37 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE pair_metrics ADD COLUMN cointegration TEXT;  -- 'pass'|'fail'|'unknown'
     `,
   },
+  {
+    version: 3,
+    name: "history_basis",
+    sql: `
+      -- Where a day's atm_iv actually came from. Three very different things have
+      -- been living in one column, and conflating them is how a proxy quietly
+      -- certifies itself as real data:
+      --
+      --   'chain'          - solved from that day's actual option chain. The real thing.
+      --   'vol_index'      - a CBOE 30-day constant-maturity implied vol index
+      --                      (^VIX, ^VXN, ^VXD, ^GVZ, ^OVX), level-calibrated to
+      --                      this ticker's own chain. Genuinely implied vol, and
+      --                      therefore genuinely non-proxied — just measured by
+      --                      CBOE rather than by us.
+      --   'realized_proxy' - realized volatility standing in for implied. NOT
+      --                      implied vol, and must never mature the IV rank.
+      ALTER TABLE history ADD COLUMN atm_iv_basis TEXT;
+
+      -- The market-implied dividend yield, recovered from the chain's own forward
+      -- (q = r - ln(F/S)/T). Beats any quoted dividend field, because it includes
+      -- borrow cost and hard-to-borrow rates that no dividend field knows about.
+      ALTER TABLE metrics ADD COLUMN implied_q REAL;
+
+      -- Whether the skew z-score is measured against this ticker's OWN history
+      -- ('time_series') or against the cross-section of the universe today
+      -- ('cross_sectional'). The latter is the honest fallback before enough
+      -- history has accumulated, but it answers a different question and must
+      -- say so.
+      ALTER TABLE metrics ADD COLUMN skew_z_basis TEXT;
+    `,
+  },
 ];
 
 /** The schema version this build expects. */

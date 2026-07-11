@@ -98,7 +98,12 @@ export function rangeRank(
   }
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
   if (hi - lo <= 1e-12) return null;
-  return ((value - lo) / (hi - lo)) * 100;
+
+  // Clamped to [0, 100]. IV rank is *defined* on that interval, and a reading of
+  // 200 is not "twice as extreme" — it is a number the scale cannot express, and
+  // downstream thresholds ("IV rank < 25") would silently misbehave on it.
+  const rank = ((value - lo) / (hi - lo)) * 100;
+  return Math.min(100, Math.max(0, rank));
 }
 
 /** Daily log returns from a close series. */

@@ -44,6 +44,11 @@ export interface HistoryRow {
   atmIv: number | null;
   /** True when `atmIv` is a realized-vol stand-in rather than a real ATM IV. */
   atmIvProxied: boolean;
+  /**
+   * Where `atmIv` came from. `realized_proxy` must NEVER mature the IV rank —
+   * that would be the proxy certifying itself as the real thing.
+   */
+  atmIvBasis: "chain" | "vol_index" | "realized_proxy" | null;
   realizedVol20d: number | null;
   /** EWMA (RiskMetrics) realized-vol forecast, in vol points. */
   ewmaVol: number | null;
@@ -247,17 +252,18 @@ export function upsertHistory(
     for (const r of rows) {
       db.run(
         `INSERT INTO history
-           (ticker, as_of, close, atm_iv, atm_iv_proxied, realized_vol_20d,
-            ewma_vol, vrp, put_skew_25d, call_put_spread, term_slope,
-            source, created_at)
+           (ticker, as_of, close, atm_iv, atm_iv_proxied, atm_iv_basis,
+            realized_vol_20d, ewma_vol, vrp, put_skew_25d, call_put_spread,
+            term_slope, source, created_at)
          VALUES
-           (:ticker, :asOf, :close, :atmIv, :proxied, :rv,
-            :ewmaVol, :vrp, :putSkew, :callPutSpread, :termSlope,
-            :source, :createdAt)
+           (:ticker, :asOf, :close, :atmIv, :proxied, :basis,
+            :rv, :ewmaVol, :vrp, :putSkew, :callPutSpread,
+            :termSlope, :source, :createdAt)
          ON CONFLICT (ticker, as_of) DO UPDATE SET
            close            = COALESCE(excluded.close,            history.close),
            atm_iv           = COALESCE(excluded.atm_iv,           history.atm_iv),
            atm_iv_proxied   = excluded.atm_iv_proxied,
+           atm_iv_basis     = COALESCE(excluded.atm_iv_basis,     history.atm_iv_basis),
            realized_vol_20d = COALESCE(excluded.realized_vol_20d, history.realized_vol_20d),
            ewma_vol         = COALESCE(excluded.ewma_vol,         history.ewma_vol),
            vrp              = COALESCE(excluded.vrp,              history.vrp),
@@ -272,6 +278,7 @@ export function upsertHistory(
           close: r.close,
           atmIv: r.atmIv,
           proxied: r.atmIvProxied ? 1 : 0,
+          basis: r.atmIvBasis,
           rv: r.realizedVol20d,
           ewmaVol: r.ewmaVol,
           vrp: r.vrp,
@@ -294,6 +301,7 @@ function mapHistory(r: Record<string, unknown>): HistoryRow {
     close: num(r.close),
     atmIv: num(r.atm_iv),
     atmIvProxied: toBool(r.atm_iv_proxied),
+    atmIvBasis: (r.atm_iv_basis ?? null) as HistoryRow["atmIvBasis"],
     realizedVol20d: num(r.realized_vol_20d),
     ewmaVol: num(r.ewma_vol),
     vrp: num(r.vrp),
@@ -589,4 +597,27 @@ export function getHistoryDepth(db: HedgeDb = getDb()): HistoryDepth {
     firstAsOf: totals?.first ?? null,
     lastAsOf: totals?.last ?? null,
   };
+}
+
+/**
+ * A ticker's chain-measured ATM IV by date.
+ *
+ * Only rows whose basis is `chain` — a real scan of a real option chain. A
+ * backfilled or proxied row must never be used to calibrate a backfill against
+ * itself, which would be circular.
+ *
+ * @param ticker - The underlying.
+ * @param db - Database handle.
+ * @returns A map of `YYYY-MM-DD` to ATM IV in vol points.
+ */
+export function getChainAtmIvByDate(
+  ticker: string,
+  db: HedgeDb = getDb(),
+): Map<string, number> {
+  const rows = db.all<{ as_of: string; atm_iv: number }>(
+    `SELECT as_of, atm_iv FROM history
+      WHERE ticker = :ticker AND atm_iv IS NOT NULL AND atm_iv_basis = 'chain'`,
+    { ticker },
+  );
+  return new Map(rows.map((r) => [String(r.as_of), Number(r.atm_iv)]));
 }

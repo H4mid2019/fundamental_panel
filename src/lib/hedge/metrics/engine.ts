@@ -52,6 +52,8 @@ export interface TickerMetrics {
   dividendYield: number;
   /** True when r or q fell back; every delta below is approximate. */
   ratesFallback: boolean;
+  /** The dividend yield implied by the chain's own forward, when recoverable. */
+  impliedQ: number | null;
 
   // ── A2: constant-maturity ATM IV, interpolated in total variance ──
   /** Decimal (0.18 = 18%). `null` when the chain did not bracket 30 days. */
@@ -71,6 +73,12 @@ export interface TickerMetrics {
   callPutSpread: number | null;
   callPutSpreadZ: number | null;
   skew25dBracketed: boolean;
+  /**
+   * Whether `putSkewZ` is measured against this ticker's own history
+   * (`time_series`) or against the universe today (`cross_sectional`). They
+   * answer different questions; see `fillCrossSectionalSkewZ`.
+   */
+  skewZBasis: "time_series" | "cross_sectional" | null;
   put25Strike: number | null;
   call25Strike: number | null;
 
@@ -211,6 +219,8 @@ export function computeMetrics(
     return series.length >= 20 ? zScore(value, series) : null;
   };
 
+  const skewZ = zOf(skew?.putSkew ?? null, "putSkew25d");
+
   // ── Price context: reuse the existing indicator, do not reimplement it ──
   const priceAction = computePriceAction(candles);
 
@@ -244,6 +254,12 @@ export function computeMetrics(
     riskFreeRate: rates.r,
     dividendYield: rates.q,
     ratesFallback: rates.fallback,
+    // From the LONGEST tenor. `q = r - ln(F/S)/T` divides by T, so any staleness
+    // in spot is amplified by `1/T` — on a 40-day expiry a 0.2% spot drift becomes
+    // a ~2% error in q. The long end is where the number is actually meaningful.
+    impliedQ:
+      [...surface.expiries].reverse().find((e) => e.impliedQ !== null)
+        ?.impliedQ ?? null,
 
     atmIv30,
     atmIv90,
@@ -255,7 +271,8 @@ export function computeMetrics(
     ivHistoryDays: realIvDays,
 
     putSkew25d: skew?.putSkew ?? null,
-    putSkewZ: zOf(skew?.putSkew ?? null, "putSkew25d"),
+    putSkewZ: skewZ,
+    skewZBasis: skewZ === null ? null : "time_series",
     callPutSpread: skew?.callPutSpread ?? null,
     callPutSpreadZ: zOf(skew?.callPutSpread ?? null, "callPutSpread"),
     skew25dBracketed: skew?.bracketed ?? false,
@@ -300,16 +317,18 @@ export function computeMetrics(
  * @returns The history row to upsert.
  */
 export function toHistoryRow(m: TickerMetrics, asOf: string): HistoryRow {
+  const real = m.atmIv30 !== null;
   return {
     ticker: m.ticker,
     asOf,
     close: m.spot,
     // Specifically the constant-maturity 30d ATM IV, in vol points.
-    atmIv: m.atmIv30 !== null ? m.atmIv30 * 100 : null,
+    atmIv: real ? (m.atmIv30 ?? 0) * 100 : null,
     // Only a genuine, bracketed ATM IV counts as real history. A proxied value
     // must never mature the IV rank — that would be the proxy quietly
     // certifying itself as the real thing.
-    atmIvProxied: m.atmIv30 === null,
+    atmIvProxied: !real,
+    atmIvBasis: real ? "chain" : "realized_proxy",
     realizedVol20d: m.realizedVol20d,
     putSkew25d: m.putSkew25d,
     callPutSpread: m.callPutSpread,
@@ -318,4 +337,48 @@ export function toHistoryRow(m: TickerMetrics, asOf: string): HistoryRow {
     vrp: m.vrp,
     source: "scan",
   };
+}
+
+/**
+ * Fill in skew z-scores cross-sectionally for tickers with no history yet.
+ *
+ * A z-score against a ticker's OWN history answers "is this skew unusual *for
+ * this ticker*?". That is the right question — and it needs ~20 accumulated
+ * sessions that a fresh install does not have. Unlike implied vol, historical
+ * 25-delta skew cannot be backfilled from any free source at all.
+ *
+ * So until the series fills, skew is z-scored against the **cross-section of the
+ * universe today**: "is this skew unusual *versus everything else right now*?".
+ * That is a genuinely different, and weaker, question — a name with a
+ * structurally steep skew will look extreme every single day, because it always
+ * is. It still beats a null by a wide margin, provided nobody can mistake it for
+ * the time-series version. Hence every affected row carries
+ * `skewZBasis: "cross_sectional"`, and every setup built on one is warned.
+ *
+ * @param metrics - Every ticker's metrics for this scan. Mutated in place.
+ * @returns The same rows, with cross-sectional z-scores filled in where needed.
+ */
+export function fillCrossSectionalSkewZ(
+  metrics: TickerMetrics[],
+): TickerMetrics[] {
+  const needy = metrics.filter(
+    (m) => m.putSkewZ === null && m.putSkew25d !== null,
+  );
+  const sample = metrics
+    .map((m) => m.putSkew25d)
+    .filter((v): v is number => v !== null);
+
+  // With a handful of tickers the "cross-section" is not a distribution, it is
+  // noise, and a z-score against it means nothing.
+  if (needy.length === 0 || sample.length < 8) return metrics;
+
+  for (const m of needy) {
+    if (m.putSkew25d === null) continue;
+    const z = zScore(m.putSkew25d, sample);
+    if (z === null) continue;
+    m.putSkewZ = z;
+    m.skewZBasis = "cross_sectional";
+  }
+
+  return metrics;
 }

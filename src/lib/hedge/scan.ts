@@ -31,6 +31,7 @@ import {
 import { toIsoDate } from "./expiry";
 import {
   computeMetrics,
+  fillCrossSectionalSkewZ,
   toHistoryRow,
   type TickerMetrics,
 } from "./metrics/engine";
@@ -267,7 +268,10 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       });
     }
 
-    const metrics = data.map((d) => d.metrics);
+    // Skew has no free historical source, so a fresh install has no time-series
+    // z-score to rank `putDebitSpread` on. Fall back to a cross-section of the
+    // universe today — a different, weaker question, and flagged as such.
+    const metrics = fillCrossSectionalSkewZ(data.map((d) => d.metrics));
 
     // ── Persist metrics + the observation series ranks are built on. ──
     insertMetrics(scanId, metrics, asOf, db);

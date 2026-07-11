@@ -85,14 +85,16 @@ describe("buildSurface", () => {
     if (!surface) return;
 
     for (const e of surface.expiries) {
-      const forward = surface.spot * Math.exp((rates.r - rates.q) * e.t);
+      // The forward is IMPLIED FROM THE CHAIN, not recomputed from spot and a
+      // dividend yield we were told. That is the whole point, so the test reads
+      // the same number the surface used.
       for (const p of [...e.calls, ...e.puts]) {
         const otm =
           p.right === "call"
             ? p.strike > surface.spot
             : p.strike < surface.spot;
         const nearForward =
-          Math.abs(Math.log(p.strike / forward)) <= 0.1 + 1e-9;
+          Math.abs(Math.log(p.strike / e.forward)) <= 0.1 + 1e-9;
         expect(otm || nearForward).toBe(true);
       }
     }
@@ -104,10 +106,9 @@ describe("buildSurface", () => {
 
     for (const e of surface.expiries) {
       if (e.atmIv === null) continue;
-      const forward = surface.spot * Math.exp((rates.r - rates.q) * e.t);
       const strikes = [...e.calls, ...e.puts].map((p) => p.strike);
-      expect(Math.min(...strikes)).toBeLessThanOrEqual(forward);
-      expect(Math.max(...strikes)).toBeGreaterThanOrEqual(forward);
+      expect(Math.min(...strikes)).toBeLessThanOrEqual(e.forward);
+      expect(Math.max(...strikes)).toBeGreaterThanOrEqual(e.forward);
     }
   });
 
@@ -220,29 +221,54 @@ describe("A1: dividend yield in delta", () => {
     expect(p25Buggy.nearestStrike).not.toBe(p25Correct.nearestStrike);
   });
 
-  // The bug is self-revealing once B6 is in place, which is a nice property:
-  // put-call parity is q-sensitive, so pricing a chain with the wrong dividend
-  // yield does not merely bias the skew — it makes the entire chain look stale.
-  it("makes put-call parity reject the whole chain when q is wrong", () => {
+  // Parity is now IMMUNE to a wrong dividend yield, because the forward is
+  // implied from the chain rather than computed from spot and q. Previously a
+  // wrong q condemned the entire chain as stale — a wall of false violations
+  // that had nothing to do with staleness.
+  it("survives a wrong dividend yield: parity no longer depends on q", () => {
     const correct = buildSurface(
       highYield,
       { r: R, q: Q, fallback: false },
       config,
     );
-    const wrong = buildSurface(
+    // Deliberately hand it a completely wrong q. The chain is unchanged.
+    const wrongQ = buildSurface(
       highYield,
       { r: R, q: 0, fallback: false },
       config,
     );
     expect(correct).not.toBeNull();
-    expect(wrong).not.toBeNull();
-    if (!correct || !wrong) return;
+    expect(wrongQ).not.toBeNull();
+    if (!correct || !wrongQ) return;
 
     expect(correct.quality.parityViolations).toBe(0);
     expect(correct.quality.quality).toBe("good");
 
-    expect(wrong.quality.parityViolations).toBeGreaterThan(0);
-    expect(wrong.quality.quality).toBe("poor");
+    // The chain is just as clean, because the wrong q is never consulted.
+    expect(wrongQ.quality.parityViolations).toBe(0);
+    expect(wrongQ.quality.quality).toBe("good");
+  });
+
+  // Better still: the implied forward hands back the carry the market is
+  // actually trading against — so the wrong q is not merely ignored, it is
+  // CORRECTED, and delta is right even when the caller was wrong.
+  it("recovers the true dividend yield from the chain, correcting a wrong input", () => {
+    const wrongQ = buildSurface(
+      highYield,
+      { r: R, q: 0, fallback: false },
+      config,
+    );
+    expect(wrongQ).not.toBeNull();
+    if (!wrongQ) return;
+
+    for (const e of wrongQ.expiries) {
+      expect(e.impliedQ).not.toBeNull();
+      // The fixture was priced at q = 5.9%, and the chain gives it back — to
+      // within the cent-rounding of its own quotes, which perturbs the implied
+      // forward and therefore q. Recovering 5.9% from a caller who said 0% is
+      // the point; the last basis point is the quotes' resolution, not an error.
+      expect(Math.abs((e.impliedQ ?? 0) - Q)).toBeLessThan(0.003);
+    }
   });
 
   it("propagates the fallback flag so a guessed rate is never shown as exact", () => {
@@ -495,6 +521,7 @@ describe("computeMetrics", () => {
       close: 700 + i,
       atmIv: 15 + (i % 10),
       atmIvProxied: false,
+      atmIvBasis: "chain" as const,
       realizedVol20d: 13 + (i % 4),
       ewmaVol: 13 + (i % 3),
       vrp: 2 + (i % 5) * 0.3,

@@ -44,6 +44,7 @@ const history = (over: Partial<HistoryRow> = {}): HistoryRow => ({
   // Vol points, matching the constant-maturity 30d ATM IV the engine writes.
   atmIv: 18,
   atmIvProxied: false,
+  atmIvBasis: "chain",
   realizedVol20d: 14,
   ewmaVol: 13.5,
   vrp: 4.5,

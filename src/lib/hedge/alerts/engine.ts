@@ -79,6 +79,14 @@ export function buildAlerts(
 
   for (const m of metrics) {
     // ── z-score crossings ──
+    // A cross-sectional z answers "unusual vs the universe today", not "unusual
+    // vs this ticker's own history". Alerting on it is fair; letting you think it
+    // is the time-series version is not.
+    const skewBasisNote =
+      m.skewZBasis === "cross_sectional"
+        ? " (measured across the universe today, not against this ticker's own history — no skew history has accumulated yet)"
+        : "";
+
     const zChecks: { z: number | null; label: string; type: AlertType }[] = [
       { z: m.putSkewZ, label: "Put skew", type: "skew_zscore" },
       { z: m.callPutSpreadZ, label: "Call/put IV spread", type: "skew_zscore" },
@@ -93,8 +101,9 @@ export function buildAlerts(
           Math.abs(c.z) >= cfg.zScoreThreshold * 1.5 ? "critical" : "warn",
         title: `${m.ticker}: ${c.label} at ${c.z.toFixed(1)}σ`,
         detail:
-          `${c.label} is ${c.z.toFixed(2)} standard deviations from its own ` +
-          `trailing mean — ${c.z > 0 ? "unusually elevated" : "unusually depressed"}.`,
+          `${c.label} is ${c.z.toFixed(2)} standard deviations from its ` +
+          `trailing mean — ${c.z > 0 ? "unusually elevated" : "unusually depressed"}.` +
+          (c.type === "skew_zscore" ? skewBasisNote : ""),
         proxied: false,
       });
     }
