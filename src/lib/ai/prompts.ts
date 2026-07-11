@@ -52,8 +52,10 @@ export interface BriefInput {
 
 /** The system prompt establishing tone and strict output contract. */
 export const SYSTEM_PROMPT = [
-  "You are a concise equity and crypto research assistant.",
-  "You explain fundamental indicators in plain, neutral language.",
+  "You are a concise equity, crypto and commodity research assistant.",
+  "You explain fundamental and price-action indicators in plain, neutral language.",
+  "Commodities have no company fundamentals, so for them you reason about trend,",
+  "momentum, volatility and positioning in the 52-week range instead.",
   "You never give financial advice or price predictions.",
   "You MUST respond with a single valid JSON object and nothing else.",
 ].join(" ");
@@ -128,7 +130,7 @@ export function buildBriefPrompt(input: BriefInput): string {
     perfBlock,
     optionsBlock,
     "",
-    "Analyze the fundamentals, news, macro backdrop, trailing returns and",
+    "Analyze the indicators above, news, macro backdrop, trailing returns and",
     "options positioning together, then judge whether a",
     "position makes sense over a 3-24 month horizon. Identify the SINGLE best",
     "holding period in whole months (between 3 and 24) where the risk/reward is",

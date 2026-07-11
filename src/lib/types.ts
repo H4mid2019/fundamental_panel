@@ -6,8 +6,17 @@
  * raw provider payloads live alongside each provider.
  */
 
-/** The asset classes the dashboard understands. */
-export type AssetType = "stock" | "index" | "crypto" | "commodity";
+/**
+ * The asset classes the dashboard understands.
+ *
+ * Exported as a runtime tuple so request validators (`z.enum(ASSET_TYPES)`) and
+ * the compile-time union stay in lockstep — a hand-written Zod enum silently
+ * drifted from this type once and rejected every commodity brief.
+ */
+export const ASSET_TYPES = ["stock", "index", "crypto", "commodity"] as const;
+
+/** One of the supported asset classes. */
+export type AssetType = (typeof ASSET_TYPES)[number];
 
 /** Directional read on an indicator value. */
 export type Sentiment = "bullish" | "neutral" | "bearish" | "unknown";

@@ -5,6 +5,7 @@ import { getAIBrief } from "@/lib/ai/openrouter";
 import { clientIp, errorResponse, SymbolSchema } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
+import { ASSET_TYPES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,8 @@ const RATE_WINDOW_MS = 60_000;
 const BriefRequestSchema = z.object({
   symbol: SymbolSchema,
   name: z.string().min(1).max(120),
-  assetType: z.enum(["stock", "index", "crypto"]),
+  // Derived from ASSET_TYPES so it can never drift from the AssetType union.
+  assetType: z.enum(ASSET_TYPES),
   indicators: z
     .array(
       z.object({
