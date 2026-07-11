@@ -18,6 +18,7 @@ export type IndicatorId =
   | "pb"
   | "ps"
   | "peg"
+  | "pegy"
   | "evEbitda"
   | "dividendYield"
   | "payoutRatio"

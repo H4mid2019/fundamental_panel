@@ -65,4 +65,20 @@ describe("classify", () => {
       expect(classify("peg", 1.5)).toBe("neutral");
     });
   });
+
+  describe("band (PEGY)", () => {
+    it("is bullish at or below 1x (growth + income not yet priced in)", () => {
+      expect(classify("pegy", 0.4)).toBe("bullish");
+      expect(classify("pegy", 1)).toBe("bullish");
+    });
+    it("is neutral between 1x and 2x", () => {
+      expect(classify("pegy", 1.6)).toBe("neutral");
+    });
+    it("is bearish above the acceptable range", () => {
+      expect(classify("pegy", 2.5)).toBe("bearish");
+    });
+    it("is unknown when the ratio could not be derived", () => {
+      expect(classify("pegy", null)).toBe("unknown");
+    });
+  });
 });

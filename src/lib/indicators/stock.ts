@@ -9,6 +9,7 @@ export const SECTOR_AVERAGES: Partial<Record<IndicatorId, number>> = {
   pb: 3.5,
   ps: 2.5,
   peg: 1.6,
+  pegy: 1.3,
   evEbitda: 13,
   dividendYield: 1.8,
   payoutRatio: 38,
@@ -18,6 +19,42 @@ export const SECTOR_AVERAGES: Partial<Record<IndicatorId, number>> = {
   currentRatio: 1.6,
   debtToEquity: 0.9,
 };
+
+/**
+ * PEGY (Lynch) ratio: P/E divided by the sum of the earnings growth rate and the
+ * dividend yield — PEG that also credits the income a shareholder is paid.
+ *
+ * The normalized fundamentals carry PEG rather than a raw growth rate, so the
+ * growth rate is recovered as `P/E ÷ PEG` (both are provider-normalized, and the
+ * P/E cancels, keeping the result self-consistent whichever provider supplied
+ * them). Growth and yield are both expressed in percent.
+ *
+ * Returns `null` when the inputs can't produce a meaningful ratio: a loss-making
+ * P/E, a missing/zero PEG, or a non-positive growth-plus-yield denominator
+ * (shrinking earnings with no dividend to offset them).
+ *
+ * @param f - Normalized stock fundamentals.
+ * @returns The PEGY ratio rounded to 2dp, or `null`.
+ */
+export function computePegy(f: StockFundamentals): number | null {
+  const { peRatio: pe, pegRatio: peg, dividendYield: yield_ } = f;
+  if (pe === null || peg === null || yield_ === null) return null;
+  if (
+    !Number.isFinite(pe) ||
+    !Number.isFinite(peg) ||
+    !Number.isFinite(yield_)
+  ) {
+    return null;
+  }
+  // A negative P/E means losses; PEGY is only meaningful for profitable firms.
+  if (pe <= 0 || peg === 0) return null;
+
+  const growthPct = pe / peg;
+  const denominator = growthPct + yield_;
+  if (denominator <= 0) return null;
+
+  return Math.round((pe / denominator) * 100) / 100;
+}
 
 /** Build a fully-resolved indicator from a value + optional metadata. */
 function makeIndicator(
@@ -39,10 +76,10 @@ function makeIndicator(
 }
 
 /**
- * Build the ordered list of 20 indicators for a stock or index.
+ * Build the ordered list of 21 indicators for a stock or index.
  *
  * @param f - Normalized stock/index fundamentals.
- * @returns The 20 indicators in display order.
+ * @returns The 21 indicators in display order.
  */
 export function buildStockIndicators(f: StockFundamentals): Indicator[] {
   return [
@@ -50,6 +87,7 @@ export function buildStockIndicators(f: StockFundamentals): Indicator[] {
     makeIndicator("pb", f.pbRatio),
     makeIndicator("ps", f.psRatio),
     makeIndicator("peg", f.pegRatio),
+    makeIndicator("pegy", computePegy(f)),
     makeIndicator("evEbitda", f.evToEbitda),
     makeIndicator("dividendYield", f.dividendYield),
     makeIndicator("payoutRatio", f.payoutRatio),

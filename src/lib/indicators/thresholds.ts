@@ -39,6 +39,8 @@ export const THRESHOLDS: Partial<Record<IndicatorId, ThresholdRule>> = {
   },
   ps: { kind: "lowerBetter", bullishAtOrBelow: 2, bearishAtOrAbove: 10 },
   peg: { kind: "band", bullish: [0, 1], acceptable: [0, 2] },
+  // Lynch's PEGY: below 1x is attractive once growth *and* income are paid for.
+  pegy: { kind: "band", bullish: [0, 1], acceptable: [0, 2] },
   evEbitda: {
     kind: "lowerBetter",
     bullishAtOrBelow: 10,

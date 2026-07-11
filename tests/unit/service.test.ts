@@ -46,10 +46,10 @@ describe("getAssetSnapshot", () => {
 });
 
 describe("getIndicatorSet", () => {
-  it("returns 20 indicators for a stock", async () => {
+  it("returns 21 indicators for a stock", async () => {
     const result = await getIndicatorSet("AAPL");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data.indicators).toHaveLength(20);
+    if (result.ok) expect(result.data.indicators).toHaveLength(21);
   });
 
   it("returns the universal indicators for crypto", async () => {

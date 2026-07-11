@@ -1,6 +1,6 @@
 # Fundamental Analysis Dashboard
 
-A production-ready dashboard for exploring the **top 20 fundamental indicators**
+A production-ready dashboard for exploring the **top 21 fundamental indicators**
 of stocks, market indexes and the top cryptocurrencies — each annotated with
 **AI-generated explanations** powered by OpenRouter.
 
@@ -17,7 +17,7 @@ as bullish / neutral / bearish, renders an AI brief, and shows a macro sidebar.
 ## Highlights
 
 - **Next.js 16 / React 19 / App Router** with strict TypeScript (no `any`).
-- **20 fundamental indicators** for stocks & indexes; universal indicators for
+- **21 fundamental indicators** for stocks & indexes; universal indicators for
   crypto, each with sentiment derived from explicit thresholds.
 - **AI briefs** via OpenRouter with a deterministic local fallback.
 - **Resilient by design**: every provider validates responses with **Zod** and

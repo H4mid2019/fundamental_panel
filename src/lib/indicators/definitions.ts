@@ -34,6 +34,15 @@ export const INDICATOR_DEFINITIONS: Record<IndicatorId, IndicatorDefinition> = {
     category: "valuation",
     format: "ratio",
   },
+  pegy: {
+    id: "pegy",
+    label: "PEGY Ratio",
+    unit: "x",
+    description:
+      "P/E adjusted for both earnings growth and dividend yield (Lynch ratio). Below 1x suggests the price is not yet paying for growth plus income.",
+    category: "valuation",
+    format: "ratio",
+  },
   evEbitda: {
     id: "evEbitda",
     label: "EV/EBITDA",

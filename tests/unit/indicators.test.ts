@@ -5,7 +5,7 @@ import {
   getDefinition,
   INDICATOR_DEFINITIONS,
 } from "@/lib/indicators/definitions";
-import { buildStockIndicators } from "@/lib/indicators/stock";
+import { buildStockIndicators, computePegy } from "@/lib/indicators/stock";
 import type { CryptoFundamentals, StockFundamentals } from "@/lib/types";
 
 const stock: StockFundamentals = {
@@ -63,10 +63,47 @@ describe("definitions", () => {
   });
 });
 
+describe("computePegy", () => {
+  it("divides P/E by growth plus dividend yield", () => {
+    // growth = P/E ÷ PEG = 12 / 0.9 = 13.33%; PEGY = 12 / (13.33 + 3.5) = 0.71
+    expect(computePegy(stock)).toBeCloseTo(0.71, 2);
+  });
+
+  it("is lower than PEG whenever a dividend is paid", () => {
+    // The yield only ever enlarges the denominator, so PEGY <= PEG.
+    const pegy = computePegy(stock);
+    expect(pegy).not.toBeNull();
+    expect(pegy ?? 0).toBeLessThan(stock.pegRatio ?? 0);
+  });
+
+  it("equals PEG when the company pays no dividend", () => {
+    const noDiv = { ...stock, dividendYield: 0 };
+    expect(computePegy(noDiv)).toBeCloseTo(stock.pegRatio ?? 0, 2);
+  });
+
+  it("returns null when any input is missing", () => {
+    expect(computePegy({ ...stock, peRatio: null })).toBeNull();
+    expect(computePegy({ ...stock, pegRatio: null })).toBeNull();
+    expect(computePegy({ ...stock, dividendYield: null })).toBeNull();
+  });
+
+  it("returns null for a loss-making or degenerate P/E and PEG", () => {
+    expect(computePegy({ ...stock, peRatio: -8 })).toBeNull();
+    expect(computePegy({ ...stock, peRatio: 0 })).toBeNull();
+    expect(computePegy({ ...stock, pegRatio: 0 })).toBeNull();
+  });
+
+  it("returns null when shrinking earnings outweigh the yield", () => {
+    // Negative PEG => negative growth; growth + yield <= 0 is not meaningful.
+    const shrinking = { ...stock, peRatio: 20, pegRatio: -1, dividendYield: 1 };
+    expect(computePegy(shrinking)).toBeNull();
+  });
+});
+
 describe("buildStockIndicators", () => {
-  it("produces 20 indicators with resolved sentiment", () => {
+  it("produces 21 indicators with resolved sentiment", () => {
     const indicators = buildStockIndicators(stock);
-    expect(indicators).toHaveLength(20);
+    expect(indicators).toHaveLength(21);
     const pe = indicators.find((i) => i.id === "pe");
     expect(pe?.value).toBe(12);
     expect(pe?.sentiment).toBe("bullish");
