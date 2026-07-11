@@ -33,6 +33,22 @@ real bug, caught against live data:
   blanket "OTM only" rule sounds principled and destroys the ATM read on thin ETF
   chains, because it discards exactly the strikes adjacent to the forward. HYG, XLU
   and LQD all returned a null ATM IV — and therefore no VRP — under that rule.
+- **A parity violation is only a _defect_ if the contract was informative.** In
+  `usable()`, each contract is screened on its own quote _before_ parity decides how
+  to book it. A dead penny wing that fails parity is counted illiquid, not bad data:
+  no vol was recoverable from it, the spread/vega screens would have dropped it
+  anyway, and a chain is not stale merely for having tails. Testing parity first
+  applied two standards to the identical worthless contract and badged every thin
+  ETF `degraded`. It is still **excluded from every metric** either way — only the
+  grading changes.
+- **Never tune `metrics.parity.tolerance` / `halfSpreadMult` to make the badge go
+  green.** That cannot tell "too strict" from "genuinely stale", and loosening
+  readmits the poison. Measure first — `tests/diagnostics/parity.probe.ts` dumps the
+  violation magnitudes against the thresholds on a live chain, with each contract's
+  last-trade age and open interest beside them. Run it before touching either number.
+  Last run (2026-07-12, ~3k pairs): rejects miss by a **median 13× the threshold**,
+  last traded a median **101 days** ago, median open interest **zero**. The threshold
+  is not too tight; it is catching dead contracts.
 - **Skew metrics read standard monthlies only.** Weeklies list far fewer strikes; a
   25-delta search on one silently clamps to the ladder edge and returns a
   wrong-but-plausible number.
