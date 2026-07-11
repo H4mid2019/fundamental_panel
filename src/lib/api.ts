@@ -3,12 +3,16 @@ import { z } from "zod";
 
 import type { AppError } from "./types";
 
-/** Validation schema for a route `symbol` parameter. */
+/**
+ * Validation schema for a route `symbol` parameter.
+ *
+ * `=` is permitted for Yahoo futures/FX symbols (e.g. `GC=F`, `EURUSD=X`).
+ */
 export const SymbolSchema = z
   .string()
   .min(1)
   .max(12)
-  .regex(/^[\^A-Za-z0-9.\-]+$/, "Invalid symbol");
+  .regex(/^[\^A-Za-z0-9.=\-]+$/, "Invalid symbol");
 
 const STATUS_BY_CODE: Record<AppError["code"], number> = {
   NOT_FOUND: 404,

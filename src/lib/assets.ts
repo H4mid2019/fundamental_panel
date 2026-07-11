@@ -18,6 +18,94 @@ export const TOP_CRYPTO_FALLBACK: readonly AssetRef[] = [
   { symbol: "XRP", name: "XRP", type: "crypto" },
 ];
 
+/**
+ * Curated commodity futures, keyed by their Yahoo symbol. The `category` feeds
+ * the asset-header meta line; `resolveCommodityCategory` reads it back.
+ */
+export const COMMODITIES: readonly (AssetRef & { category: string })[] = [
+  {
+    symbol: "GC=F",
+    name: "Gold",
+    type: "commodity",
+    category: "Precious metal",
+  },
+  {
+    symbol: "SI=F",
+    name: "Silver",
+    type: "commodity",
+    category: "Precious metal",
+  },
+  {
+    symbol: "PL=F",
+    name: "Platinum",
+    type: "commodity",
+    category: "Precious metal",
+  },
+  {
+    symbol: "PA=F",
+    name: "Palladium",
+    type: "commodity",
+    category: "Precious metal",
+  },
+  {
+    symbol: "HG=F",
+    name: "Copper",
+    type: "commodity",
+    category: "Industrial metal",
+  },
+  {
+    symbol: "CL=F",
+    name: "Crude Oil (WTI)",
+    type: "commodity",
+    category: "Energy",
+  },
+  {
+    symbol: "BZ=F",
+    name: "Brent Crude",
+    type: "commodity",
+    category: "Energy",
+  },
+  {
+    symbol: "NG=F",
+    name: "Natural Gas",
+    type: "commodity",
+    category: "Energy",
+  },
+  { symbol: "RB=F", name: "Gasoline", type: "commodity", category: "Energy" },
+  { symbol: "ZC=F", name: "Corn", type: "commodity", category: "Agriculture" },
+  { symbol: "ZW=F", name: "Wheat", type: "commodity", category: "Agriculture" },
+  {
+    symbol: "ZS=F",
+    name: "Soybeans",
+    type: "commodity",
+    category: "Agriculture",
+  },
+  {
+    symbol: "KC=F",
+    name: "Coffee",
+    type: "commodity",
+    category: "Agriculture",
+  },
+  { symbol: "SB=F", name: "Sugar", type: "commodity", category: "Agriculture" },
+  {
+    symbol: "CT=F",
+    name: "Cotton",
+    type: "commodity",
+    category: "Agriculture",
+  },
+];
+
+/**
+ * Look up the category ("Energy", "Precious metal", …) for a commodity symbol.
+ *
+ * @param symbol - The commodity ticker (e.g. `GC=F`).
+ * @returns The category, or `null` when it isn't a curated commodity.
+ */
+export function resolveCommodityCategory(symbol: string): string | null {
+  const upper = symbol.toUpperCase();
+  return COMMODITIES.find((c) => c.symbol === upper)?.category ?? null;
+}
+
 /** Curated set of assets offered in the selector. */
 export const SUPPORTED_ASSETS: readonly AssetRef[] = [
   { symbol: "AAPL", name: "Apple Inc.", type: "stock" },
@@ -34,6 +122,7 @@ export const SUPPORTED_ASSETS: readonly AssetRef[] = [
   { symbol: "^FTSE", name: "FTSE 100", type: "index" },
   { symbol: "^N225", name: "Nikkei 225", type: "index" },
   ...TOP_CRYPTO_FALLBACK,
+  ...COMMODITIES.map(({ symbol, name, type }) => ({ symbol, name, type })),
 ];
 
 /**
@@ -46,6 +135,8 @@ export function resolveAssetType(symbol: string): AssetType {
   const upper = symbol.toUpperCase();
   if (upper.startsWith("^")) return "index";
   if (upper in CRYPTO_IDS) return "crypto";
+  // Yahoo suffixes every futures contract with `=F` (e.g. GC=F, CL=F).
+  if (upper.endsWith("=F")) return "commodity";
   return "stock";
 }
 

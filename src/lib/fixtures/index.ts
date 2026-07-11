@@ -397,6 +397,47 @@ const STOCK_NEWS_TEMPLATES: ReadonlyArray<{
   },
 ];
 
+/**
+ * Commodities have no earnings or guidance, so they get supply/demand and
+ * macro-flavoured headlines rather than the corporate stock templates.
+ */
+const COMMODITY_NEWS_TEMPLATES: ReadonlyArray<{
+  title: (name: string) => string;
+  source: string;
+  daysAgo: number;
+}> = [
+  {
+    title: (n) => `${n} climbs as the dollar weakens`,
+    source: "Reuters",
+    daysAgo: 1,
+  },
+  {
+    title: (n) => `Supply disruption tightens the ${n} market`,
+    source: "Bloomberg",
+    daysAgo: 2,
+  },
+  {
+    title: (n) => `Funds raise net long positioning in ${n}`,
+    source: "Reuters",
+    daysAgo: 3,
+  },
+  {
+    title: (n) => `${n} inventories build more than expected`,
+    source: "MarketWire",
+    daysAgo: 4,
+  },
+  {
+    title: (n) => `Demand outlook for ${n} softens on slower growth`,
+    source: "FT",
+    daysAgo: 6,
+  },
+  {
+    title: (n) => `Analysts lift year-end ${n} forecast`,
+    source: "Bloomberg",
+    daysAgo: 8,
+  },
+];
+
 const CRYPTO_NEWS_TEMPLATES: ReadonlyArray<{
   title: (name: string) => string;
   source: string;
@@ -658,7 +699,11 @@ export function getNewsFixture(
 ): RawNewsArticle[] {
   const name = resolveAssetName(symbol);
   const templates =
-    type === "crypto" ? CRYPTO_NEWS_TEMPLATES : STOCK_NEWS_TEMPLATES;
+    type === "crypto"
+      ? CRYPTO_NEWS_TEMPLATES
+      : type === "commodity"
+        ? COMMODITY_NEWS_TEMPLATES
+        : STOCK_NEWS_TEMPLATES;
   return templates.map((t, i) => ({
     id: `${symbol.toUpperCase()}-fx-${i}`,
     title: t.title(name),

@@ -37,8 +37,14 @@ describe("registry", () => {
       expect(CRYPTO_IDS[coin.symbol]).toBeTruthy();
     }
   });
-  it("includes stocks, indexes and crypto", () => {
+  it("includes stocks, indexes, crypto and commodities", () => {
     const types = new Set(SUPPORTED_ASSETS.map((a) => a.type));
-    expect(types).toEqual(new Set(["stock", "index", "crypto"]));
+    expect(types).toEqual(new Set(["stock", "index", "crypto", "commodity"]));
+  });
+
+  it("offers gold and silver so commodities are findable", () => {
+    const symbols = new Set(SUPPORTED_ASSETS.map((a) => a.symbol));
+    expect(symbols.has("GC=F")).toBe(true);
+    expect(symbols.has("SI=F")).toBe(true);
   });
 });

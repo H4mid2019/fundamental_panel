@@ -26,9 +26,10 @@ const TYPE_LABELS: Record<AssetType, string> = {
   stock: "Stocks",
   index: "Indexes",
   crypto: "Crypto",
+  commodity: "Commodities",
 };
 
-const TYPE_ORDER: AssetType[] = ["stock", "index", "crypto"];
+const TYPE_ORDER: AssetType[] = ["stock", "index", "crypto", "commodity"];
 
 interface AssetSelectorProps {
   value: string | null;
@@ -76,6 +77,7 @@ export function AssetSelector({ value, onSelect }: AssetSelectorProps) {
       stock: [],
       index: [],
       crypto: [],
+      commodity: [],
     };
     for (const asset of filtered) groups[asset.type].push(asset);
     return groups;
@@ -103,7 +105,7 @@ export function AssetSelector({ value, onSelect }: AssetSelectorProps) {
             </span>
           ) : (
             <span className="text-muted-foreground">
-              Search stocks, indexes, crypto…
+              Search stocks, indexes, crypto, commodities…
             </span>
           )}
           <ChevronsUpDown className="opacity-50" aria-hidden />

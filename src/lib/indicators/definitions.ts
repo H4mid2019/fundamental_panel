@@ -171,6 +171,51 @@ export const INDICATOR_DEFINITIONS: Record<IndicatorId, IndicatorDefinition> = {
     category: "market",
     format: "percent",
   },
+  volatility90d: {
+    id: "volatility90d",
+    label: "Volatility 90d",
+    unit: "%",
+    description:
+      "Annualized 90-day price volatility — the calmer, structural read next to the 30-day figure.",
+    category: "market",
+    format: "percent",
+  },
+  trendVs200d: {
+    id: "trendVs200d",
+    label: "Trend vs 200d MA",
+    unit: "%",
+    description:
+      "Price above (+) or below (−) its 200-day moving average. Above signals a durable uptrend.",
+    category: "market",
+    format: "percent",
+  },
+  from52wHigh: {
+    id: "from52wHigh",
+    label: "From 52w High",
+    unit: "%",
+    description:
+      "Distance below the 52-week high. Near zero means the asset is pressing its highs.",
+    category: "market",
+    format: "percent",
+  },
+  from52wLow: {
+    id: "from52wLow",
+    label: "From 52w Low",
+    unit: "%",
+    description:
+      "Distance above the 52-week low. A large gap means the asset has already run a long way.",
+    category: "market",
+    format: "percent",
+  },
+  rsi14: {
+    id: "rsi14",
+    label: "RSI (14)",
+    unit: "",
+    description:
+      "Wilder's 14-day momentum oscillator. Extremes at either end (below 20 or above 80) signal exhaustion risk.",
+    category: "market",
+    format: "number",
+  },
   assetTurnover: {
     id: "assetTurnover",
     label: "Asset Turnover",

@@ -6,8 +6,8 @@
  * raw provider payloads live alongside each provider.
  */
 
-/** The three asset classes the dashboard understands. */
-export type AssetType = "stock" | "index" | "crypto";
+/** The asset classes the dashboard understands. */
+export type AssetType = "stock" | "index" | "crypto" | "commodity";
 
 /** Directional read on an indicator value. */
 export type Sentiment = "bullish" | "neutral" | "bearish" | "unknown";
@@ -36,7 +36,13 @@ export type IndicatorId =
   | "beta"
   | "volatility30d"
   | "assetTurnover"
-  | "nvtRatio";
+  | "nvtRatio"
+  // Commodity/price-action indicators (no fundamentals exist for futures).
+  | "volatility90d"
+  | "trendVs200d"
+  | "from52wHigh"
+  | "from52wLow"
+  | "rsi14";
 
 /** Grouping used for layout and color-coding in the grid. */
 export type IndicatorCategory =
@@ -214,6 +220,35 @@ export interface CryptoFundamentals {
   volatility30d: number | null;
   nvtRatio: number | null;
   priceChange30dPct: number | null;
+}
+
+/**
+ * Normalized commodity/futures fundamentals.
+ *
+ * Futures have no company fundamentals (no earnings, equity or cash flow), so
+ * this is a price-action profile derived from daily candles instead. Percent
+ * fields are expressed in percent (e.g. `14.2` for 14.2%).
+ */
+export interface CommodityFundamentals {
+  symbol: string;
+  name: string;
+  price: number | null;
+  currency: string;
+  changePct: number | null;
+  /** e.g. `Precious metal`, `Energy` — shown as the header meta. */
+  category: string | null;
+  /** Annualized realized volatility over the trailing 30 sessions. */
+  volatility30d: number | null;
+  /** Annualized realized volatility over the trailing 90 sessions. */
+  volatility90d: number | null;
+  /** Percent above (+) or below (−) the 200-day simple moving average. */
+  trendVs200d: number | null;
+  /** Percent below the 52-week high (≤ 0). */
+  from52wHigh: number | null;
+  /** Percent above the 52-week low (≥ 0). */
+  from52wLow: number | null;
+  /** Wilder's RSI(14) on daily closes. */
+  rsi14: number | null;
 }
 
 /** Tab groups of the peer-benchmarks comparison table. */

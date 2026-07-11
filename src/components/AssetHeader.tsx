@@ -12,6 +12,7 @@ const TYPE_LABEL: Record<AssetType, string> = {
   stock: "Stock",
   index: "Index",
   crypto: "Crypto",
+  commodity: "Commodity",
 };
 
 interface AssetHeaderProps {

@@ -269,6 +269,11 @@ function mapQuoteType(quoteType: string | undefined): AssetType | null {
       return "stock";
     case "INDEX":
       return "index";
+    // Yahoo tags futures contracts (GC=F, CL=F) as FUTURE; without this every
+    // commodity was silently dropped from search results.
+    case "FUTURE":
+    case "COMMODITY":
+      return "commodity";
     default:
       return null;
   }
@@ -313,10 +318,14 @@ export async function getSymbolSearch(query: string): Promise<AssetRef[]> {
       });
     }
 
-    // Merge live results with curated crypto matches, de-duplicated by symbol.
-    const cryptoMatches = curated.filter((a) => a.type === "crypto");
+    // Curated crypto and commodity matches lead: a Yahoo search for "gold"
+    // returns dozens of mining equities that would otherwise push GC=F out of
+    // the top slice entirely. De-duplicated by symbol, so curated names win.
+    const curatedPriority = curated.filter(
+      (a) => a.type === "crypto" || a.type === "commodity",
+    );
     const seen = new Set<string>();
-    const merged = [...live, ...cryptoMatches].filter((a) => {
+    const merged = [...curatedPriority, ...live].filter((a) => {
       const key = a.symbol.toUpperCase();
       if (seen.has(key)) return false;
       seen.add(key);

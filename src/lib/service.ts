@@ -1,11 +1,13 @@
 import { resolveAssetName, resolveAssetType } from "./assets";
 import { getCached, setCached } from "./cache";
 import { getCryptoFixture, getStockFixture } from "./fixtures";
+import { buildCommodityIndicators } from "./indicators/commodity";
 import { buildCryptoIndicators } from "./indicators/crypto";
 import { buildStockIndicators } from "./indicators/stock";
 import { logger } from "./logger";
 import { buildPeerGroups, type PeerInput } from "./peers";
 import { getCryptoFundamentals } from "./providers/coingecko";
+import { getCommodityFundamentals } from "./providers/commodity";
 import { getFinancialStatements } from "./providers/financials";
 import { getStockMetrics } from "./providers/finnhub";
 import { getStockFundamentals } from "./providers/fmp";
@@ -16,6 +18,7 @@ import {
   ok,
   type AppError,
   type AssetSnapshot,
+  type CommodityFundamentals,
   type CryptoFundamentals,
   type FinancialStatements,
   type IndicatorSet,
@@ -175,6 +178,21 @@ async function loadCryptoFundamentals(
   return err(result.error);
 }
 
+/** Load commodity price-action fundamentals with caching. */
+async function loadCommodityFundamentals(
+  symbol: string,
+): Promise<Result<CommodityFundamentals, AppError>> {
+  const cacheKey = `fund:commodity:${symbol.toUpperCase()}`;
+  const cachedValue = await getCached<CommodityFundamentals>(cacheKey);
+  if (cachedValue) return ok(cachedValue);
+
+  const result = await getCommodityFundamentals(symbol);
+  if (result.ok) {
+    await setCached(cacheKey, result.data, FUNDAMENTALS_TTL_SECONDS);
+  }
+  return result;
+}
+
 /**
  * Build the headline snapshot for an asset.
  *
@@ -186,6 +204,24 @@ export async function getAssetSnapshot(
 ): Promise<Result<AssetSnapshot, AppError>> {
   const type = resolveAssetType(symbol);
   const asOf = new Date().toISOString();
+
+  if (type === "commodity") {
+    const result = await loadCommodityFundamentals(symbol);
+    if (!result.ok) return err(result.error);
+    const f = result.data;
+    return ok({
+      symbol: f.symbol,
+      name: f.name,
+      type,
+      price: f.price,
+      currency: f.currency,
+      changePct: f.changePct,
+      // Futures have no market capitalization.
+      marketCap: null,
+      meta: f.category ?? undefined,
+      asOf,
+    });
+  }
 
   if (type === "crypto") {
     const result = await loadCryptoFundamentals(symbol);
@@ -343,6 +379,17 @@ export async function getIndicatorSet(
 ): Promise<Result<IndicatorSet, AppError>> {
   const type = resolveAssetType(symbol);
   const asOf = new Date().toISOString();
+
+  if (type === "commodity") {
+    const result = await loadCommodityFundamentals(symbol);
+    if (!result.ok) return err(result.error);
+    return ok({
+      symbol: result.data.symbol,
+      assetType: type,
+      asOf,
+      indicators: buildCommodityIndicators(result.data),
+    });
+  }
 
   if (type === "crypto") {
     const result = await loadCryptoFundamentals(symbol);

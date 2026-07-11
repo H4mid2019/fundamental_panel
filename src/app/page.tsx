@@ -135,9 +135,9 @@ export default function HomePage() {
           <div className="max-w-md space-y-2">
             <h2 className="text-lg font-medium">Pick an asset to begin</h2>
             <p className="text-sm text-muted-foreground">
-              Search for a stock (e.g. AAPL), an index (e.g. ^GSPC) or one of
-              the top cryptocurrencies to view its top fundamental indicators
-              with AI-generated explanations.
+              Search for a stock (e.g. AAPL), an index (e.g. ^GSPC), a commodity
+              (e.g. Gold) or one of the top cryptocurrencies to view its top
+              indicators with AI-generated explanations.
             </p>
           </div>
         </div>

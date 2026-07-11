@@ -1,4 +1,4 @@
-import type { IndicatorId, Sentiment } from "../types";
+import type { AssetType, IndicatorId, Sentiment } from "../types";
 
 /**
  * A classification rule for a single indicator.
@@ -97,6 +97,45 @@ export const THRESHOLDS: Partial<Record<IndicatorId, ThresholdRule>> = {
     bearishAtOrBelow: 0.3,
   },
   nvtRatio: { kind: "lowerBetter", bullishAtOrBelow: 30, bearishAtOrAbove: 90 },
+  volatility90d: {
+    kind: "lowerBetter",
+    bullishAtOrBelow: 18,
+    bearishAtOrAbove: 35,
+  },
+  trendVs200d: {
+    kind: "higherBetter",
+    bullishAtOrAbove: 3,
+    bearishAtOrBelow: -3,
+  },
+  // Pressing the highs is strength; a deep drawdown is a broken trend.
+  from52wHigh: {
+    kind: "higherBetter",
+    bullishAtOrAbove: -5,
+    bearishAtOrBelow: -20,
+  },
+  // Extremes at *either* end signal exhaustion risk, so both read bearish.
+  rsi14: { kind: "band", bullish: [30, 70], acceptable: [20, 80] },
+  // `from52wLow` is deliberately rule-less: distance above the low is context,
+  // not a directional signal (it reads as strength or as "already run" alike).
+};
+
+/**
+ * Asset-class overrides applied on top of {@link THRESHOLDS}.
+ *
+ * Some indicators are only comparable within an asset class: 40% annualized
+ * volatility is unremarkable for crypto but extreme for gold, so the shared
+ * `volatility30d` band would misread every commodity as calm/bullish.
+ */
+export const THRESHOLD_OVERRIDES: Partial<
+  Record<AssetType, Partial<Record<IndicatorId, ThresholdRule>>>
+> = {
+  commodity: {
+    volatility30d: {
+      kind: "lowerBetter",
+      bullishAtOrBelow: 18,
+      bearishAtOrAbove: 35,
+    },
+  },
 };
 
 /**
@@ -104,13 +143,20 @@ export const THRESHOLDS: Partial<Record<IndicatorId, ThresholdRule>> = {
  *
  * @param id - The indicator identifier.
  * @param value - The numeric value, or `null` when unavailable.
+ * @param assetType - When given, an asset-class rule from
+ *   {@link THRESHOLD_OVERRIDES} takes precedence over the shared rule.
  * @returns `"unknown"` for null, `"neutral"` when no rule applies, otherwise the
  *   bullish/neutral/bearish reading.
  */
-export function classify(id: IndicatorId, value: number | null): Sentiment {
+export function classify(
+  id: IndicatorId,
+  value: number | null,
+  assetType?: AssetType,
+): Sentiment {
   if (value === null) return "unknown";
 
-  const rule = THRESHOLDS[id];
+  const override = assetType ? THRESHOLD_OVERRIDES[assetType]?.[id] : undefined;
+  const rule = override ?? THRESHOLDS[id];
   if (!rule) return "neutral";
 
   switch (rule.kind) {
