@@ -18,6 +18,12 @@ It is the **only** part of the app with durable state: SQLite on a named Docker
 volume, holding the accumulated IV history. `docker system prune --volumes` used to
 be harmless here. It is not any more.
 
+**Live in production since 2026-07-12.** The scheduler scans twice a day, so the IV
+history now accumulates on its own. Two things the deploy needs that git does not
+carry: `HEDGE_SCAN_SECRET` in the server's `.env` (without it both the scan and
+backfill endpoints fail closed with a 404 — deliberately, since they fire hundreds of
+Yahoo requests), and the bootstrap order below, run once against the empty database.
+
 ## Read before changing the quant layer
 
 Several things in here look like they could be simplified and cannot. Each was a
