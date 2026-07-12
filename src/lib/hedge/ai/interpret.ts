@@ -41,7 +41,8 @@ Rules:
 - Analytical commentary only. Never give financial advice, never use advice framing ("you should", "we recommend").
 - Be specific and quantitative. "Vol is low" is useless; "30d IV at 13% against 20d realized of 17% means the market is underpricing recent movement" is useful.
 - If a setup carries warnings (proxied IV rank, stale chain data, earnings in the tenor), say so plainly in the risk.
-- 2-3 sentences per field, maximum. No preamble, no filler.
+- 2-3 sentences per field, maximum. Open with the number or the conclusion. No preamble, no filler, no restating the question.
+- Spell an abbreviation out in parentheses the first time it appears in a field: IVR (implied-volatility rank), VRP (variance risk premium), IV (implied volatility), RV (realized volatility), ATM (at-the-money), OTM (out-of-the-money), DTE (days to expiry). Fields are read in isolation, so each one expands its own first use.
 
 Respond ONLY with JSON of the form:
 {"interpretations":[{"ticker":"...","meaning":"...","risk":"...","invalidation":"..."}]}`;
@@ -105,25 +106,26 @@ export function buildFallbackInterpretation(setup: Setup): Interpretation {
 
   const meaningByScanner: Record<string, string> = {
     protectivePut:
-      `IV rank of ${num("ivRank")} puts implied volatility near the bottom of its trailing range, ` +
-      `so downside protection costs ${num("costPct")}% of notional (${num("annualizedCost")}% annualized) ` +
-      `for a floor at ${num("floorPct")}%. The variance risk premium is ${num("vrp")} vol points.`,
+      `IVR (implied-volatility rank) of ${num("ivRank")} puts IV (implied volatility) near the bottom of ` +
+      `its trailing range, so downside protection costs ${num("costPct")}% of notional ` +
+      `(${num("annualizedCost")}% annualized) for a floor at ${num("floorPct")}%. ` +
+      `VRP (variance risk premium) is ${num("vrp")} vol points.`,
     putDebitSpread:
       `Put skew sits ${num("putSkewZ")} standard deviations above its own mean, so the wing being sold ` +
       `is priced richly against the body being bought. The spread pays ${num("payoffRatio")}:1 for ` +
       `${num("netDebit")} of debit.`,
     callCredit:
-      `IV rank of ${num("ivRank")} and a price ${num("pctVs200dma")}% above the 200-day mean make upside ` +
-      `expensive to buy and therefore attractive to sell: ${num("yieldOnRisk")}% on capital at risk ` +
-      `(${num("annualizedYield")}% annualized).`,
+      `IVR (implied-volatility rank) of ${num("ivRank")} and a price ${num("pctVs200dma")}% above the ` +
+      `200-day mean make upside expensive to buy and therefore attractive to sell: ` +
+      `${num("yieldOnRisk")}% on capital at risk (${num("annualizedYield")}% annualized).`,
     collar:
       `Calls are priced ${num("ivSpread")} vol points over the puts, which is what makes this collar ` +
       `cheap: a floor at ${num("floorPct")}% and a cap at +${num("capPct")}% for ${num("netCostPct")}% ` +
       `of notional.`,
     tailHedge:
       `The composite reads ${num("composite")}: credit is deteriorating while equity volatility stays ` +
-      `subdued, so far-OTM convexity is priced for calm. The spread pays ${num("payoffRatio")}:1 for ` +
-      `${num("costPct")}% of notional.`,
+      `subdued, so far-OTM (out-of-the-money) convexity is priced for calm. The spread pays ` +
+      `${num("payoffRatio")}:1 for ${num("costPct")}% of notional.`,
   };
 
   const riskByScanner: Record<string, string> = {
@@ -143,8 +145,8 @@ export function buildFallbackInterpretation(setup: Setup): Interpretation {
     setup.scanner === "tailHedge"
       ? "Credit spreads recovering while equity vol stays flat would remove the divergence the trade is built on."
       : setup.scanner === "protectivePut" || setup.scanner === "callCredit"
-        ? `A move in IV rank back through the ${setup.scanner === "protectivePut" ? "cheap" : "rich"} threshold, or a break of the 200-day trend, removes the premise.`
-        : "The skew or IV spread reverting to its mean removes the pricing anomaly this trade is built on.";
+        ? `A move in IVR (implied-volatility rank) back through the ${setup.scanner === "protectivePut" ? "cheap" : "rich"} threshold, or a break of the 200-day trend, removes the premise.`
+        : "The skew or IV (implied volatility) spread reverting to its mean removes the pricing anomaly this trade is built on.";
 
   const warned =
     setup.warnings.length > 0 ? ` Caveats: ${setup.warnings.join("; ")}.` : "";
