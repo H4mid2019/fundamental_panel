@@ -93,7 +93,20 @@ function SetupRow({
             />
           )}
         </td>
-        <td className="px-2 py-1.5 font-medium">{setup.ticker}</td>
+        <td className="px-2 py-1.5 font-medium">
+          <span className="inline-flex items-center gap-1">
+            {setup.ticker}
+            {/* The note lives in the expanded row, so without a marker here the
+                only way to find one is to open every row in turn. Only the top
+                `ai.topN` setups get interpreted, so most rows have none. */}
+            {ai && (
+              <Sparkles
+                className="size-3 text-primary"
+                aria-label="Has an AI interpretation"
+              />
+            )}
+          </span>
+        </td>
         <td className="px-2 py-1.5 text-right tabular-nums">
           {setup.score.toFixed(2)}
         </td>

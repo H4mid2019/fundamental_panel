@@ -9,6 +9,7 @@ import {
   getLatestScan,
   getMetricsForScan,
   getPairMetrics,
+  readMarketBrief,
 } from "@/lib/hedge/db/repo";
 import { logger } from "@/lib/logger";
 
@@ -81,6 +82,17 @@ const OverviewSchema = z.object({
     requiredDays: z.number(),
     lookbackDays: z.number(),
   }),
+  /** The whole-market AI read for this scan. Null before the first scan, or with AI off. */
+  marketBrief: z
+    .object({
+      headline: z.string(),
+      regime: z.string(),
+      opportunities: z.string(),
+      risks: z.string(),
+      model: z.string(),
+      fallback: z.boolean(),
+    })
+    .nullable(),
   tickers: z.array(TickerSchema),
   pairs: z.array(PairSchema),
   universeSize: z.number(),
@@ -105,6 +117,13 @@ export async function GET(): Promise<NextResponse> {
     const rows = scan ? getMetricsForScan(scan.id, db) : [];
     const pairRows = scan ? getPairMetrics(scan.id, db) : [];
 
+    // Read the brief this scan pointed at, not the most recently written one:
+    // an unchanged market reuses an older cached row, so "newest" is the wrong
+    // brief whenever the market returns to a state it has already been in.
+    const brief = scan?.marketBriefHash
+      ? readMarketBrief(scan.marketBriefHash, db)
+      : null;
+
     const payload: HedgeOverview = {
       scan: scan
         ? {
@@ -123,6 +142,7 @@ export async function GET(): Promise<NextResponse> {
         requiredDays: required,
         lookbackDays: config.metrics.ivRankLookbackDays,
       },
+      marketBrief: brief,
       tickers: rows.map((r) => ({
         ticker: String(r.ticker),
         spot: num(r.spot),

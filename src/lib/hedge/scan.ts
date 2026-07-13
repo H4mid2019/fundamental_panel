@@ -12,6 +12,7 @@ import type { Candle } from "../chart/types";
 import { logger } from "../logger";
 
 import { interpretSetups, type Interpretation } from "./ai/interpret";
+import { buildMarketDigest, interpretMarket } from "./ai/market";
 import { buildAlerts, fireAlerts, type AlertRecord } from "./alerts/engine";
 import { deliverToSlack } from "./alerts/slack";
 import { getHedgeConfig, type HedgeConfig } from "./config";
@@ -24,6 +25,7 @@ import {
   insertMetrics,
   insertPairMetrics,
   insertSetups,
+  setScanMarketBrief,
   startScan,
   upsertHistory,
   type ScanTrigger,
@@ -358,10 +360,27 @@ export async function runScan(options: ScanOptions): Promise<ScanResult> {
       .sort((a, b) => b.score - a.score)
       .slice(0, config.ai.topN);
 
-    const interpretations =
-      options.skipAi || !config.ai.enabled
-        ? new Map<string, Interpretation>()
-        : await interpretSetups(top, db);
+    const aiOff = options.skipAi || !config.ai.enabled;
+
+    const interpretations = aiOff
+      ? new Map<string, Interpretation>()
+      : await interpretSetups(top, db);
+
+    // ── AI read of the whole market. ──
+    //
+    // A different question from the per-setup notes above, and not answerable by
+    // them: each of those is written with one ticker in front of it. This one is
+    // written from a digest of the entire universe.
+    if (!aiOff && metrics.length > 0) {
+      const digest = buildMarketDigest(
+        metrics,
+        Object.values(ranked).flat(),
+        drafts,
+        tailHedge,
+      );
+      const { hash } = await interpretMarket(digest, db);
+      setScanMarketBrief(scanId, hash, db);
+    }
 
     const status =
       data.length === 0 ? "failed" : skipped.length > 0 ? "partial" : "ok";

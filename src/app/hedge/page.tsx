@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { AlertsFeed } from "@/components/hedge/AlertsFeed";
 import { HedgeContextBar } from "@/components/hedge/HedgeContextBar";
 import { HedgeHeatmap } from "@/components/hedge/HedgeHeatmap";
+import { MarketBrief } from "@/components/hedge/MarketBrief";
 import { PairMonitor } from "@/components/hedge/PairMonitor";
 import { SetupsTable } from "@/components/hedge/SetupsTable";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -111,6 +112,7 @@ export default function HedgePage(): React.JSX.Element {
       ) : (
         <>
           <HedgeContextBar overview={overview} />
+          <MarketBrief brief={overview.marketBrief} />
           <HedgeHeatmap tickers={overview.tickers} />
 
           <div>

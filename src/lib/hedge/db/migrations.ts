@@ -259,6 +259,30 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE metrics ADD COLUMN skew_z_basis TEXT;
     `,
   },
+  {
+    version: 4,
+    name: "market_brief",
+    sql: `
+      -- The whole-market AI read, cached on a hash of the computed digest it was
+      -- written from, so an unchanged market never re-bills the model. Same
+      -- reasoning as ai_cache, one row per distinct market state rather than per
+      -- (ticker, signal).
+      CREATE TABLE market_brief (
+        signal_hash TEXT PRIMARY KEY,
+        model       TEXT NOT NULL,
+        payload     TEXT NOT NULL,  -- JSON
+        fallback    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL
+      );
+
+      -- Which brief belongs to which scan. A pointer, not a timestamp lookup:
+      -- the cache means a scan can legitimately reuse an OLDER row when the
+      -- market has not moved, and "the most recently written brief" is then the
+      -- wrong one whenever the market state oscillates back to a state it has
+      -- already been in.
+      ALTER TABLE scans ADD COLUMN market_brief_hash TEXT;
+    `,
+  },
 ];
 
 /** The schema version this build expects. */

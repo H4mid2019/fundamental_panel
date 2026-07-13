@@ -32,6 +32,8 @@ export interface ScanRecord {
   tickersOk: number;
   tickersFailed: number;
   error: string | null;
+  /** The market brief this scan produced, if any. See {@link readMarketBrief}. */
+  marketBriefHash: string | null;
 }
 
 /** One day's observations for one ticker — the series z-scores are built on. */
@@ -133,6 +135,10 @@ function mapScan(r: Record<string, unknown>): ScanRecord {
     tickersOk: Number(r.tickers_ok),
     tickersFailed: Number(r.tickers_failed),
     error: r.error === null ? null : String(r.error),
+    marketBriefHash:
+      r.market_brief_hash === null || r.market_brief_hash === undefined
+        ? null
+        : String(r.market_brief_hash),
   };
 }
 
@@ -643,4 +649,99 @@ export function getChainAtmIvByDate(
     { ticker },
   );
   return new Map(rows.map((r) => [String(r.as_of), Number(r.atm_iv)]));
+}
+
+/* ── market brief ──────────────────────────────────────────────────────────── */
+
+/** The whole-market AI read, as stored. Mirrors `ai/market.ts`. */
+export interface MarketBriefRecord {
+  headline: string;
+  regime: string;
+  opportunities: string;
+  risks: string;
+  model: string;
+  fallback: boolean;
+}
+
+/**
+ * Read a cached market brief.
+ *
+ * @param hash - Hash of the digest the brief was written from.
+ * @param db - Database handle.
+ * @returns The brief, or `null` when this market state has not been read before.
+ */
+export function readMarketBrief(
+  hash: string,
+  db: HedgeDb = getDb(),
+): MarketBriefRecord | null {
+  const row = db.get<{ payload: string; model: string; fallback: number }>(
+    `SELECT payload, model, fallback FROM market_brief WHERE signal_hash = :hash`,
+    { hash },
+  );
+  if (!row) return null;
+  try {
+    const body = JSON.parse(row.payload) as Omit<
+      MarketBriefRecord,
+      "model" | "fallback"
+    >;
+    return {
+      ...body,
+      model: row.model,
+      fallback: row.fallback === 1,
+    };
+  } catch {
+    // A corrupt payload is a cache miss, not a crash. It will be rewritten.
+    return null;
+  }
+}
+
+/**
+ * Cache a market brief.
+ *
+ * @param hash - Hash of the digest it was written from.
+ * @param brief - The brief.
+ * @param db - Database handle.
+ */
+export function writeMarketBrief(
+  hash: string,
+  brief: MarketBriefRecord,
+  db: HedgeDb = getDb(),
+): void {
+  db.run(
+    `INSERT OR REPLACE INTO market_brief (signal_hash, model, payload, fallback, created_at)
+     VALUES (:hash, :model, :payload, :fallback, :createdAt)`,
+    {
+      hash,
+      model: brief.model,
+      payload: JSON.stringify({
+        headline: brief.headline,
+        regime: brief.regime,
+        opportunities: brief.opportunities,
+        risks: brief.risks,
+      }),
+      fallback: brief.fallback ? 1 : 0,
+      createdAt: nowIso(),
+    },
+  );
+}
+
+/**
+ * Point a scan at the brief it produced.
+ *
+ * Stored as a pointer rather than inferred from "the newest brief row", because
+ * the cache means an unchanged market legitimately reuses an older row.
+ *
+ * @param scanId - The scan.
+ * @param hash - The brief's hash.
+ * @param db - Database handle.
+ */
+export function setScanMarketBrief(
+  scanId: number,
+  hash: string,
+  db: HedgeDb = getDb(),
+): void {
+  db.run(`UPDATE scans SET market_brief_hash = :hash WHERE id = :scanId`, {
+    scanId,
+    hash,
+  });
 }
